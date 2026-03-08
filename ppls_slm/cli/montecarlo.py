@@ -1,292 +1,174 @@
-"""
-Main Execution Script for PPLS Parameter Estimation Comparison
-=============================================================
+"""Monte Carlo pipeline entry point.
 
-This script coordinates the entire experiment pipeline from configuration to final results,
-implementing a simplified three-stage approach: data generation, parameter estimation, and
-visualization. Each stage can be skipped if outputs already exist.
+This module orchestrates a three-stage pipeline:
+1) synthetic data generation
+2) parameter estimation (Monte Carlo)
+3) visualization
 
-Architecture Overview:
----------------------
-The main script orchestrates:
-1. Configuration loading and validation
-2. Experiment setup and execution
-3. Results analysis and visualization
-4. Report generation
-
-Function List:
---------------
-main(): Main execution function
-load_configuration(config_path): Load experiment settings from JSON
-setup_logging(base_dir): Configure logging for tracking
-run_data_generation_stage(config, base_dir): Execute data generation if needed
-run_parameter_estimation_stage(config, base_dir): Execute parameter estimation if needed
-run_visualization_stage(config, base_dir): Generate figures if needed
-check_directory_status(directory): Check if directory exists and is non-empty
-save_results(results, output_dir): Save results and generate reports
-validate_configuration(config): Check configuration validity
-print_experiment_summary(results, stages_run): Display summary to console
-
-Call Relationships:
-------------------
-main() → load_configuration()
-main() → check_directory_status()
-main() → run_data_generation_stage()
-main() → run_parameter_estimation_stage()
-main() → run_visualization_stage()
-run_data_generation_stage() → SineDataGenerator.__init__()
-run_parameter_estimation_stage() → PPLSExperiment.__init__()
-run_visualization_stage() → PPLSVisualizer.__init__()
+The implementation is intentionally "thin": core logic lives in `ppls_slm.*` modules.
 """
 
+from __future__ import annotations
+
+import argparse
+import json
+import logging
 import os
 import sys
-import logging
 from datetime import datetime
-import json
+from pathlib import Path
+from typing import Dict
+
 import numpy as np
-from typing import Dict, Optional, Tuple
 
 from ppls_slm.data_generator import SineDataGenerator
 from ppls_slm.experiment import PPLSExperiment
+from ppls_slm.experiment_config import load_config_with_defaults
 from ppls_slm.visualization import PPLSVisualizer
+from ppls_slm.utils import repo_root, setup_logging
 
 
-def main():
-    """
-    Main execution function for PPLS parameter estimation comparison.
-    """
-    # Load configuration
+_DEFAULTS: Dict = {
+    "model": {"p": 20, "q": 20, "r": 3, "n_samples": 500},
+    "data_generation": {
+        "noise_levels": {
+            "low": {"sigma_e2": 0.1, "sigma_f2": 0.1, "sigma_h2": 0.05},
+            "high": {"sigma_e2": 0.5, "sigma_f2": 0.5, "sigma_h2": 0.25},
+        },
+        "sine_parameters": {"frequency": 0.7, "magnitude": 0.7},
+    },
+    "algorithms": {
+        "common": {"n_starts": 32, "random_seed": 42},
+        "slm": {"optimizer": "trust-constr", "max_iter": 1000, "use_noise_preestimation": True},
+        "slm_joint": {
+            "optimizer": "trust-constr",
+            "max_iter": 1000,
+            "use_noise_preestimation": True,
+            "gtol": 1e-3,
+            "xtol": 1e-3,
+            "barrier_tol": 1e-3,
+            "constraint_slack": 1e-2,
+        },
+        "em": {"max_iter": 1000, "tolerance": 1e-6},
+    },
+    "experiment": {"n_trials": 100, "random_seed": 42, "parallel_trials": False, "n_jobs": 1},
+    "output": {
+        "save_intermediate": True,
+        "base_dir": None,
+        "figure_format": "pdf",
+        "force_data_generation": False,
+        "force_parameter_estimation": False,
+        "force_visualization": False,
+    },
+}
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="PPLS Monte Carlo pipeline")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config.json",
+        help="Path to config JSON (default: config.json)",
+    )
+    parser.add_argument(
+        "--base-dir",
+        type=str,
+        default=None,
+        help="Override output.base_dir (optional)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+
+    # Resolve config path: if relative, interpret it from repo root.
+    root = repo_root()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = (root / config_path).resolve()
+
     print("Loading configuration...")
-    config = load_configuration('config.json')
-        
-    # Validate configuration
+    config = load_config_with_defaults(config_path, defaults=_DEFAULTS)
+
     if not validate_configuration(config):
         print("Configuration validation failed. Exiting.")
         return 1
-    
-    # Set base directory from config (defaults to current directory if not specified)
-    base_dir = config.get('output', {}).get('base_dir', os.getcwd())
-    base_dir = os.path.abspath(base_dir)
-    
-    # Create base directory if it doesn't exist
+
+    # Determine base directory.
+    base_dir = args.base_dir or config.get("output", {}).get("base_dir") or os.getcwd()
+    base_dir = os.path.abspath(str(base_dir))
+
     os.makedirs(base_dir, exist_ok=True)
-    
-    # Setup logging
-    setup_logging(base_dir)
-    
-    print("\n" + "="*60)
+
+    # Logging
+    log_dir = os.path.join(base_dir, "logs")
+    log_path = setup_logging(log_dir, filename="experiment.log")
+    logging.info("=" * 60)
+    logging.info("PPLS Parameter Estimation Experiment Started")
+    logging.info(f"Config    : {config_path}")
+    logging.info(f"Log file  : {log_path}")
+    logging.info(f"Timestamp : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logging.info("=" * 60)
+
+    print("\n" + "=" * 60)
     print("PPLS Parameter Estimation Comparison Experiment")
-    print("="*60)
+    print("=" * 60)
     print(f"Model dimensions: p={config['model']['p']}, q={config['model']['q']}, r={config['model']['r']}")
     print(f"Number of trials: {config['experiment']['n_trials']}")
     print(f"Base directory: {base_dir}")
-    
-    # Validate base directory is writable
+
     if not os.access(base_dir, os.W_OK):
         print(f"Error: Base directory is not writable: {base_dir}")
         return 1
-    print("="*60 + "\n")
-    
-    stages_run = []
-    
+
+    print("=" * 60 + "\n")
+
+    stages_run: list[str] = []
+
     try:
-        # Stage 1: Data Generation
-        data_generated = run_data_generation_stage(config, base_dir)
-        if data_generated:
+        if run_data_generation_stage(config, base_dir):
             stages_run.append("Data Generation")
-            
-        # Stage 2: Parameter Estimation
-        estimation_run = run_parameter_estimation_stage(config, base_dir)
-        if estimation_run:
+
+        if run_parameter_estimation_stage(config, base_dir):
             stages_run.append("Parameter Estimation")
-            
-        # Stage 3: Visualization
-        figures_generated = run_visualization_stage(config, base_dir)
-        if figures_generated:
+
+        if run_visualization_stage(config, base_dir):
             stages_run.append("Visualization")
-            
-        # Print summary
+
         print_experiment_summary(config, stages_run, base_dir)
-        
-        print(f"\nExperiment completed successfully!")
+
+        print("\nExperiment completed successfully!")
         print(f"Stages executed: {', '.join(stages_run) if stages_run else 'None (all outputs existed)'}")
-        
         return 0
-        
+
     except Exception as e:
         logging.error(f"Experiment failed: {str(e)}", exc_info=True)
         print(f"\nExperiment failed with error: {str(e)}")
         return 1
 
 
-def load_configuration(config_path: str) -> Dict:
-    """
-    Load experiment configuration from JSON file.
-    
-    Parameters:
-    -----------
-    config_path : str
-        Path to configuration file
-        
-    Returns:
-    --------
-    config : dict
-        Configuration dictionary
-    """
-    if not os.path.exists(config_path):
-        # Try to find config in common locations
-        search_paths = [
-            config_path,
-            os.path.join(os.path.dirname(__file__), config_path),
-            os.path.join(os.path.dirname(__file__), '..', config_path),
-            'config.json',
-            os.path.join(os.path.dirname(__file__), 'config.json')
-        ]
-        
-        config_found = False
-        for path in search_paths:
-            if os.path.exists(path):
-                config_path = path
-                config_found = True
-                break
-                
-        if not config_found:
-            raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-        
-    # Set default values if not specified
-    defaults = {
-        'model': {
-            'p': 20,
-            'q': 20,
-            'r': 3,
-            'n_samples': 500
-        },
-        'data_generation': {
-            'noise_levels': {
-                'low': {'sigma_e2': 0.1, 'sigma_f2': 0.1, 'sigma_h2': 0.05},
-                'high': {'sigma_e2': 0.5, 'sigma_f2': 0.5, 'sigma_h2': 0.25}
-            },
-            'sine_parameters': {
-                'frequency': 0.7,
-                'magnitude': 0.7
-            }
-        },
-        'algorithms': {
-            'common': {
-                'n_starts': 32,
-                'random_seed': 42
-            },
-            'slm': {
-                'optimizer': 'trust-constr',
-                'max_iter': 1000,
-                'use_noise_preestimation': True
-            },
-            'slm_joint': {
-                'optimizer': 'trust-constr',
-                'max_iter': 1000,
-                'use_noise_preestimation': True,
-                'gtol': 1e-3,
-                'xtol': 1e-3,
-                'barrier_tol': 1e-3,
-                'constraint_slack': 1e-2
-            },
-            'em': {
-                'max_iter': 1000,
-                'tolerance': 1e-6
-            }
-        },
-        'experiment': {
-            'n_trials': 100,
-            'random_seed': 42,
-            # Parallel Monte Carlo trial execution (parameter-estimation stage)
-            'parallel_trials': False,
-            # Number of worker processes. Use -1 for os.cpu_count().
-            'n_jobs': 1
-        },
-        'output': {
-            'save_intermediate': True,
-            'base_dir': None,
-            'figure_format': 'pdf',
-            'force_data_generation': False,
-            'force_parameter_estimation': False,
-            'force_visualization': False
-        }
-    }
-    
-    # Merge defaults with loaded config
-    def merge_dicts(default, config):
-        for key, value in default.items():
-            if key not in config:
-                config[key] = value
-            elif isinstance(value, dict) and isinstance(config[key], dict):
-                merge_dicts(value, config[key])
-                
-    merge_dicts(defaults, config)
-    
-    return config
-
-
-def setup_logging(base_dir: str):
-    """
-    Configure logging for experiment tracking.
-    
-    Parameters:
-    -----------
-    base_dir : str
-        Base directory for saving logs
-    """
-    # Create logs directory if it doesn't exist
-    log_dir = os.path.join(base_dir, 'logs')
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Configure logging
-    log_file = os.path.join(log_dir, 'experiment.log')
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-    
-    # Log experiment start
-    logging.info("="*60)
-    logging.info("PPLS Parameter Estimation Experiment Started")
-    logging.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logging.info("="*60)
-
-
 def run_data_generation_stage(config: Dict, base_dir: str) -> bool:
     """Execute data generation stage for each configured noise level.
 
-    For backward compatibility, we keep the original directory names for the low-noise setting:
+    For backward compatibility, keep directory names for the low-noise setting:
     - low  -> base_dir/data
-    - other levels (e.g., high) -> base_dir/data_<level>
+    - other levels -> base_dir/data_<level>
 
     Returns True if any data was generated.
     """
-    force = config.get('output', {}).get('force_data_generation', False)
-    noise_levels = config.get('data_generation', {}).get('noise_levels', {})
 
+    force = config.get("output", {}).get("force_data_generation", False)
+    noise_levels = config.get("data_generation", {}).get("noise_levels", {})
     if not isinstance(noise_levels, dict) or len(noise_levels) == 0:
-        # Fallback to the original behavior
-        noise_levels = {'low': {'sigma_e2': 0.1, 'sigma_f2': 0.1, 'sigma_h2': 0.05}}
+        noise_levels = {"low": {"sigma_e2": 0.1, "sigma_f2": 0.1, "sigma_h2": 0.05}}
 
     generated_any = False
 
     for level_name, noise_config in noise_levels.items():
-        if level_name == 'low':
-            data_dir = os.path.join(base_dir, 'data')
-        else:
-            data_dir = os.path.join(base_dir, f'data_{level_name}')
+        data_dir = os.path.join(base_dir, "data" if level_name == "low" else f"data_{level_name}")
 
-        # Check if data already exists
         if not force and check_directory_status(data_dir):
             print(f"Data directory for noise='{level_name}' exists and is non-empty. Skipping data generation.")
             logging.info(f"Skipping data generation - data already exists (noise='{level_name}')")
@@ -295,97 +177,80 @@ def run_data_generation_stage(config: Dict, base_dir: str) -> bool:
         print(f"Stage 1: Generating experimental data (noise='{level_name}')...")
         logging.info(f"Starting data generation stage (noise='{level_name}')")
 
-        # Create data directory
         os.makedirs(data_dir, exist_ok=True)
 
-        # Initialize data generator
         generator = SineDataGenerator(
-            p=config['model']['p'],
-            q=config['model']['q'],
-            r=config['model']['r'],
-            n_samples=config['model']['n_samples'],
-            random_seed=config['experiment']['random_seed'],
-            output_dir=data_dir
+            p=config["model"]["p"],
+            q=config["model"]["q"],
+            r=config["model"]["r"],
+            n_samples=config["model"]["n_samples"],
+            random_seed=config["experiment"]["random_seed"],
+            output_dir=data_dir,
         )
 
-        sigma_e2 = noise_config.get('sigma_e2', 0.1)
-        sigma_f2 = noise_config.get('sigma_f2', 0.1)
-        sigma_h2 = noise_config.get('sigma_h2', 0.05)
+        sigma_e2 = noise_config.get("sigma_e2", 0.1)
+        sigma_f2 = noise_config.get("sigma_f2", 0.1)
+        sigma_h2 = noise_config.get("sigma_h2", 0.05)
 
-        # Generate ground truth parameters
-        true_params = generator.generate_true_parameters(
-            sigma_e2=sigma_e2,
-            sigma_f2=sigma_f2,
-            sigma_h2=sigma_h2
-        )
+        true_params = generator.generate_true_parameters(sigma_e2=sigma_e2, sigma_f2=sigma_f2, sigma_h2=sigma_h2)
 
-        # Generate data for all trials
         all_X = []
         all_Y = []
 
-        for trial_id in range(config['experiment']['n_trials']):
-            # Use different random seed for each trial's data generation
-            data_seed = config['experiment']['random_seed'] + 1000 + trial_id
+        for trial_id in range(config["experiment"]["n_trials"]):
+            # Keep the original per-trial data seed scheme.
+            data_seed = config["experiment"]["random_seed"] + 1000 + trial_id
             np.random.seed(data_seed)
 
-            # Generate data with fixed parameters
             from ppls_slm.ppls_model import PPLSModel
-            model = PPLSModel(config['model']['p'], config['model']['q'], config['model']['r'])
+
+            model = PPLSModel(config["model"]["p"], config["model"]["q"], config["model"]["r"])
 
             X, Y = model.sample(
-                n_samples=config['model']['n_samples'],
-                W=true_params['W'],
-                C=true_params['C'],
-                B=true_params['B'],
-                Sigma_t=true_params['Sigma_t'],
-                sigma_e2=true_params['sigma_e2'],
-                sigma_f2=true_params['sigma_f2'],
-                sigma_h2=true_params['sigma_h2']
+                n_samples=config["model"]["n_samples"],
+                W=true_params["W"],
+                C=true_params["C"],
+                B=true_params["B"],
+                Sigma_t=true_params["Sigma_t"],
+                sigma_e2=true_params["sigma_e2"],
+                sigma_f2=true_params["sigma_f2"],
+                sigma_h2=true_params["sigma_h2"],
             )
 
             all_X.append(X)
             all_Y.append(Y)
 
-        # Save data arrays (核心数据，程序必需)
-        np.save(os.path.join(data_dir, 'X_trials.npy'), np.array(all_X))
-        np.save(os.path.join(data_dir, 'Y_trials.npy'), np.array(all_Y))
+        np.save(os.path.join(data_dir, "X_trials.npy"), np.array(all_X))
+        np.save(os.path.join(data_dir, "Y_trials.npy"), np.array(all_Y))
 
-        # Save ground truth parameters (核心参数，程序必需)
         import pickle
-        with open(os.path.join(data_dir, 'ground_truth.pkl'), 'wb') as f:
+
+        with open(os.path.join(data_dir, "ground_truth.pkl"), "wb") as f:
             pickle.dump(true_params, f)
 
-        # Save human-readable parameter summary (人类可读)
         param_summary = {
-            'model_info': {
-                'dimensions': {'p': config['model']['p'], 'q': config['model']['q'], 'r': config['model']['r']},
-                'n_trials': config['experiment']['n_trials'],
-                'n_samples': config['model']['n_samples']
+            "model_info": {
+                "dimensions": {"p": config["model"]["p"], "q": config["model"]["q"], "r": config["model"]["r"]},
+                "n_trials": config["experiment"]["n_trials"],
+                "n_samples": config["model"]["n_samples"],
             },
-            'noise_level': level_name,
-            'noise_parameters': {
-                'sigma_e2': float(sigma_e2),
-                'sigma_f2': float(sigma_f2),
-                'sigma_h2': float(sigma_h2)
+            "noise_level": level_name,
+            "noise_parameters": {"sigma_e2": float(sigma_e2), "sigma_f2": float(sigma_f2), "sigma_h2": float(sigma_h2)},
+            "loading_matrices": {
+                "W_shape": list(true_params["W"].shape),
+                "C_shape": list(true_params["C"].shape),
+                "W_norm_by_component": [float(np.linalg.norm(true_params["W"][:, i])) for i in range(config["model"]["r"])],
+                "C_norm_by_component": [float(np.linalg.norm(true_params["C"][:, i])) for i in range(config["model"]["r"])],
             },
-            'loading_matrices': {
-                'W_shape': list(true_params['W'].shape),
-                'C_shape': list(true_params['C'].shape),
-                'W_norm_by_component': [float(np.linalg.norm(true_params['W'][:, i])) for i in range(config['model']['r'])],
-                'C_norm_by_component': [float(np.linalg.norm(true_params['C'][:, i])) for i in range(config['model']['r'])]
+            "diagonal_parameters": {
+                "B_diagonal": [float(x) for x in np.diag(true_params["B"])],
+                "Sigma_t_diagonal": [float(x) for x in np.diag(true_params["Sigma_t"])],
+                "identifiability_products": [float(x) for x in (np.diag(true_params["Sigma_t"]) * np.diag(true_params["B"]))],
             },
-            'diagonal_parameters': {
-                'B_diagonal': [float(x) for x in np.diag(true_params['B'])],
-                'Sigma_t_diagonal': [float(x) for x in np.diag(true_params['Sigma_t'])],
-                'identifiability_products': [float(x) for x in (np.diag(true_params['Sigma_t']) * np.diag(true_params['B']))]
-            },
-            'generation_info': {
-                'random_seed': config['experiment']['random_seed'],
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
+            "generation_info": {"random_seed": config["experiment"]["random_seed"], "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
         }
 
-        with open(os.path.join(data_dir, 'data_summary.json'), 'w') as f:
+        with open(os.path.join(data_dir, "data_summary.json"), "w", encoding="utf-8") as f:
             json.dump(param_summary, f, indent=2)
 
         print(f"[OK] Data generated for {config['experiment']['n_trials']} trials (noise='{level_name}')")
@@ -398,318 +263,257 @@ def run_data_generation_stage(config: Dict, base_dir: str) -> bool:
 
 
 def run_parameter_estimation_stage(config: Dict, base_dir: str) -> bool:
-    """Execute parameter estimation stage for each configured noise level.
+    """Execute parameter estimation stage for each configured noise level."""
 
-    For backward compatibility, we keep the original directory names for the low-noise setting:
-    - low  -> base_dir/results (reads base_dir/data)
-    - other levels (e.g., high) -> base_dir/results_<level> (reads base_dir/data_<level>)
-
-    In addition to the standard outputs, we write:
-    - results_<level>/mse_table.json  (ready-to-copy strings for Table 2)
-    - base_dir/robustness_summary.json (collects all noise-level summaries)
-
-    Returns True if any estimation was run.
-    """
-    force = config.get('output', {}).get('force_parameter_estimation', False)
-    noise_levels = config.get('data_generation', {}).get('noise_levels', {})
-
+    force = config.get("output", {}).get("force_parameter_estimation", False)
+    noise_levels = config.get("data_generation", {}).get("noise_levels", {})
     if not isinstance(noise_levels, dict) or len(noise_levels) == 0:
-        noise_levels = {'low': {'sigma_e2': 0.1, 'sigma_f2': 0.1, 'sigma_h2': 0.05}}
+        noise_levels = {"low": {"sigma_e2": 0.1, "sigma_f2": 0.1, "sigma_h2": 0.05}}
 
     def _format_mean_pm_std(mean: float, std: float, scale: float = 100.0, decimals: int = 2) -> str:
         return f"{mean*scale:.{decimals}f}±{std*scale:.{decimals}f}"
 
     def _extract_mse_table_from_results(experiment_results: Dict) -> Dict:
-        analysis = experiment_results.get('analysis', {})
-        params = ['W', 'C', 'B', 'Sigma_t', 'sigma_h2', 'sigma_e2', 'sigma_f2']
+        analysis = experiment_results.get("analysis", {})
+        params = ["W", "C", "B", "Sigma_t", "sigma_h2", "sigma_e2", "sigma_f2"]
+        methods = ["slm", "slm_joint", "slm_oracle", "em", "ecm"]
 
-        methods = ['slm', 'slm_joint', 'slm_oracle', 'em', 'ecm']
-
-
-
-        table = {}
+        table: Dict = {}
         for method in methods:
             if method not in analysis:
                 continue
             table[method] = {}
             for param in params:
-                key = f'mse_{param}'
+                key = f"mse_{param}"
                 if key in analysis[method]:
-                    mean = float(analysis[method][key].get('mean', float('nan')))
-                    std = float(analysis[method][key].get('std', float('nan')))
+                    mean = float(analysis[method][key].get("mean", float("nan")))
+                    std = float(analysis[method][key].get("std", float("nan")))
                     table[method][param] = {
-                        'mean': mean,
-                        'std': std,
-                        'table_str_x1e2': _format_mean_pm_std(mean, std, scale=100.0, decimals=2)
+                        "mean": mean,
+                        "std": std,
+                        "table_str_x1e2": _format_mean_pm_std(mean, std, scale=100.0, decimals=2),
                     }
         return table
 
     robustness_summary = {
-        'model': config.get('model', {}),
-        'experiment': config.get('experiment', {}),
-        'noise_levels': {},
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        "model": config.get("model", {}),
+        "experiment": config.get("experiment", {}),
+        "noise_levels": {},
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
     estimated_any = False
 
     for level_name, noise_cfg in noise_levels.items():
-        if level_name == 'low':
-            data_dir = os.path.join(base_dir, 'data')
-            results_dir = os.path.join(base_dir, 'results')
+        if level_name == "low":
+            data_dir = os.path.join(base_dir, "data")
+            results_dir = os.path.join(base_dir, "results")
         else:
-            data_dir = os.path.join(base_dir, f'data_{level_name}')
-            results_dir = os.path.join(base_dir, f'results_{level_name}')
+            data_dir = os.path.join(base_dir, f"data_{level_name}")
+            results_dir = os.path.join(base_dir, f"results_{level_name}")
 
-        # If results exist and not forced, only skip when the core output exists.
-        # This avoids incorrectly skipping after an interrupted run (e.g., partial trial logs).
-        results_pkl = os.path.join(results_dir, 'experiment_results.pkl')
+        results_pkl = os.path.join(results_dir, "experiment_results.pkl")
         if not force and check_directory_status(results_dir) and os.path.exists(results_pkl):
-            print(f"Results directory for noise='{level_name}' exists and contains experiment_results.pkl. Skipping estimation.")
+            print(
+                f"Results directory for noise='{level_name}' exists and contains experiment_results.pkl. Skipping estimation."
+            )
             logging.info(f"Skipping parameter estimation - results already exist (noise='{level_name}')")
 
             try:
                 import pickle
-                with open(results_pkl, 'rb') as f:
+
+                with open(results_pkl, "rb") as f:
                     existing_results = pickle.load(f)
+
                 mse_table = _extract_mse_table_from_results(existing_results)
-                with open(os.path.join(results_dir, 'mse_table.json'), 'w') as f:
+                with open(os.path.join(results_dir, "mse_table.json"), "w", encoding="utf-8") as f:
                     json.dump(mse_table, f, indent=2)
 
-                robustness_summary['noise_levels'][level_name] = {
-                    'noise_parameters': {
-                        'sigma_e2': float(noise_cfg.get('sigma_e2', 0.1)),
-                        'sigma_f2': float(noise_cfg.get('sigma_f2', 0.1)),
-                        'sigma_h2': float(noise_cfg.get('sigma_h2', 0.05))
+                robustness_summary["noise_levels"][level_name] = {
+                    "noise_parameters": {
+                        "sigma_e2": float(noise_cfg.get("sigma_e2", 0.1)),
+                        "sigma_f2": float(noise_cfg.get("sigma_f2", 0.1)),
+                        "sigma_h2": float(noise_cfg.get("sigma_h2", 0.05)),
                     },
-                    'data_dir': data_dir,
-                    'results_dir': results_dir,
-                    'mse_table': mse_table,
-                    'n_trials_completed': int(existing_results.get('n_trials_completed', 0))
+                    "data_dir": data_dir,
+                    "results_dir": results_dir,
+                    "mse_table": mse_table,
+                    "n_trials_completed": int(existing_results.get("n_trials_completed", 0)),
                 }
             except Exception as e:
-                robustness_summary['noise_levels'][level_name] = {
-                    'noise_parameters': {
-                        'sigma_e2': float(noise_cfg.get('sigma_e2', 0.1)),
-                        'sigma_f2': float(noise_cfg.get('sigma_f2', 0.1)),
-                        'sigma_h2': float(noise_cfg.get('sigma_h2', 0.05))
+                robustness_summary["noise_levels"][level_name] = {
+                    "noise_parameters": {
+                        "sigma_e2": float(noise_cfg.get("sigma_e2", 0.1)),
+                        "sigma_f2": float(noise_cfg.get("sigma_f2", 0.1)),
+                        "sigma_h2": float(noise_cfg.get("sigma_h2", 0.05)),
                     },
-                    'data_dir': data_dir,
-                    'results_dir': results_dir,
-                    'warning': f"Could not load existing experiment_results.pkl: {str(e)}"
+                    "data_dir": data_dir,
+                    "results_dir": results_dir,
+                    "warning": f"Could not load existing experiment_results.pkl: {str(e)}",
                 }
             continue
 
         if not force and check_directory_status(results_dir) and not os.path.exists(results_pkl):
-            print(f"Results directory for noise='{level_name}' looks incomplete (missing experiment_results.pkl). Re-running estimation.")
+            print(
+                f"Results directory for noise='{level_name}' looks incomplete (missing experiment_results.pkl). Re-running estimation."
+            )
             logging.info(f"Found incomplete results directory, re-running estimation (noise='{level_name}')")
 
-
-        # Check if data exists
         if not check_directory_status(data_dir):
             raise FileNotFoundError(
-                f"Data directory for noise='{level_name}' is empty or doesn't exist: {data_dir}. "
-                f"Run data generation first."
+                f"Data directory for noise='{level_name}' is empty or doesn't exist: {data_dir}. Run data generation first."
             )
 
         print(f"Stage 2: Running parameter estimation (noise='{level_name}')...")
         logging.info(f"Starting parameter estimation stage (noise='{level_name}')")
 
-        # Create results directory
         os.makedirs(results_dir, exist_ok=True)
 
-        # Initialize experiment (reads from the noise-specific data directory)
         experiment = PPLSExperiment(config, base_dir, results_dir, data_dir=data_dir)
-
-        # Run Monte Carlo experiment
         results = experiment.run_monte_carlo()
 
-        # Save core results (程序必需)
         import pickle
-        with open(os.path.join(results_dir, 'experiment_results.pkl'), 'wb') as f:
+
+        with open(os.path.join(results_dir, "experiment_results.pkl"), "wb") as f:
             pickle.dump(results, f)
 
-        # Extract and persist MSE table (for paper Table 2)
         mse_table = _extract_mse_table_from_results(results)
-        with open(os.path.join(results_dir, 'mse_table.json'), 'w') as f:
+        with open(os.path.join(results_dir, "mse_table.json"), "w", encoding="utf-8") as f:
             json.dump(mse_table, f, indent=2)
 
-        # Save human-readable summary (人类可读)
         readable_summary = {
-            'noise_level': level_name,
-            'noise_parameters': {
-                'sigma_e2': float(noise_cfg.get('sigma_e2', 0.1)),
-                'sigma_f2': float(noise_cfg.get('sigma_f2', 0.1)),
-                'sigma_h2': float(noise_cfg.get('sigma_h2', 0.05))
+            "noise_level": level_name,
+            "noise_parameters": {
+                "sigma_e2": float(noise_cfg.get("sigma_e2", 0.1)),
+                "sigma_f2": float(noise_cfg.get("sigma_f2", 0.1)),
+                "sigma_h2": float(noise_cfg.get("sigma_h2", 0.05)),
             },
-            'experiment_overview': {
-                'n_trials_completed': results.get('n_trials_completed', 0),
-                'success_rate_percent': round(results.get('n_trials_completed', 0) / config['experiment']['n_trials'] * 100, 1),
-                'total_runtime_minutes': round(results.get('timing', {}).get('total_time', 0) / 60, 2),
-                'avg_time_per_trial_seconds': round(results.get('timing', {}).get('avg_time_per_trial', 0), 2)
+            "experiment_overview": {
+                "n_trials_completed": results.get("n_trials_completed", 0),
+                "success_rate_percent": round(results.get("n_trials_completed", 0) / config["experiment"]["n_trials"] * 100, 1),
+                "total_runtime_minutes": round(results.get("timing", {}).get("total_time", 0) / 60, 2),
+                "avg_time_per_trial_seconds": round(results.get("timing", {}).get("avg_time_per_trial", 0), 2),
             },
-            'algorithm_performance': {},
-            'parameter_estimation_quality': {},
-            'mse_table': mse_table,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            "algorithm_performance": {},
+            "parameter_estimation_quality": {},
+            "mse_table": mse_table,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        # Add algorithm performance comparison
-        if 'analysis' in results and 'runtime_statistics' in results['analysis']:
-            runtime_stats = results['analysis']['runtime_statistics']
-            readable_summary['algorithm_performance'] = {
-                'slm': {
-                    'avg_runtime_seconds': round(runtime_stats.get('slm', {}).get('avg_runtime', 0), 2),
-                    'avg_convergence_rate_percent': round(runtime_stats.get('slm', {}).get('avg_convergence_rate', 0) * 100, 1)
+        if "analysis" in results and "runtime_statistics" in results["analysis"]:
+            runtime_stats = results["analysis"]["runtime_statistics"]
+            readable_summary["algorithm_performance"] = {
+                "slm": {
+                    "avg_runtime_seconds": round(runtime_stats.get("slm", {}).get("avg_runtime", 0), 2),
+                    "avg_convergence_rate_percent": round(runtime_stats.get("slm", {}).get("avg_convergence_rate", 0) * 100, 1),
                 },
-                'slm_oracle': {
-                    'avg_runtime_seconds': round(runtime_stats.get('slm_oracle', {}).get('avg_runtime', 0), 2),
-                    'avg_convergence_rate_percent': round(runtime_stats.get('slm_oracle', {}).get('avg_convergence_rate', 0) * 100, 1)
+                "slm_oracle": {
+                    "avg_runtime_seconds": round(runtime_stats.get("slm_oracle", {}).get("avg_runtime", 0), 2),
+                    "avg_convergence_rate_percent": round(runtime_stats.get("slm_oracle", {}).get("avg_convergence_rate", 0) * 100, 1),
                 },
-                'em': {
-                    'avg_runtime_seconds': round(runtime_stats.get('em', {}).get('avg_runtime', 0), 2),
-                    'avg_convergence_rate_percent': round(runtime_stats.get('em', {}).get('avg_convergence_rate', 0) * 100, 1)
+                "em": {
+                    "avg_runtime_seconds": round(runtime_stats.get("em", {}).get("avg_runtime", 0), 2),
+                    "avg_convergence_rate_percent": round(runtime_stats.get("em", {}).get("avg_convergence_rate", 0) * 100, 1),
                 },
-                'ecm': {
-                    'avg_runtime_seconds': round(runtime_stats.get('ecm', {}).get('avg_runtime', 0), 2),
-                    'avg_convergence_rate_percent': round(runtime_stats.get('ecm', {}).get('avg_convergence_rate', 0) * 100, 1)
-                }
+                "ecm": {
+                    "avg_runtime_seconds": round(runtime_stats.get("ecm", {}).get("avg_runtime", 0), 2),
+                    "avg_convergence_rate_percent": round(runtime_stats.get("ecm", {}).get("avg_convergence_rate", 0) * 100, 1),
+                },
             }
 
+        if "analysis" in results:
+            for method in ["slm", "slm_joint", "slm_oracle", "em", "ecm"]:
+                if method in results["analysis"]:
+                    method_quality: Dict[str, float] = {}
+                    for param in ["W", "C", "B", "Sigma_t", "sigma_h2"]:
+                        key = f"mse_{param}"
+                        if key in results["analysis"][method]:
+                            method_quality[f"{param}_mse_mean"] = round(results["analysis"][method][key]["mean"], 6)
+                            method_quality[f"{param}_mse_std"] = round(results["analysis"][method][key]["std"], 6)
+                    readable_summary["parameter_estimation_quality"][method] = method_quality
 
-        # Add parameter estimation quality
-        if 'analysis' in results:
-            for method in ['slm', 'slm_joint', 'slm_oracle', 'em', 'ecm']:
-
-
-                if method in results['analysis']:
-                    method_quality = {}
-                    for param in ['W', 'C', 'B', 'Sigma_t', 'sigma_h2']:
-                        key = f'mse_{param}'
-                        if key in results['analysis'][method]:
-                            method_quality[f'{param}_mse_mean'] = round(results['analysis'][method][key]['mean'], 6)
-                            method_quality[f'{param}_mse_std'] = round(results['analysis'][method][key]['std'], 6)
-                    readable_summary['parameter_estimation_quality'][method] = method_quality
-
-        with open(os.path.join(results_dir, 'results_summary.json'), 'w') as f:
+        with open(os.path.join(results_dir, "results_summary.json"), "w", encoding="utf-8") as f:
             json.dump(readable_summary, f, indent=2)
 
-        print(f"[OK] Parameter estimation completed for {results.get('n_trials_completed', 0)} trials (noise='{level_name}')")
+        print(
+            f"[OK] Parameter estimation completed for {results.get('n_trials_completed', 0)} trials (noise='{level_name}')"
+        )
         print(f"[OK] Results saved to: {results_dir}")
-        logging.info(f"Parameter estimation completed - {results.get('n_trials_completed', 0)} trials (noise='{level_name}')")
+        logging.info(
+            f"Parameter estimation completed - {results.get('n_trials_completed', 0)} trials (noise='{level_name}')"
+        )
 
-        robustness_summary['noise_levels'][level_name] = {
-            'noise_parameters': readable_summary['noise_parameters'],
-            'data_dir': data_dir,
-            'results_dir': results_dir,
-            'mse_table': mse_table,
-            'n_trials_completed': int(results.get('n_trials_completed', 0))
+        robustness_summary["noise_levels"][level_name] = {
+            "noise_parameters": readable_summary["noise_parameters"],
+            "data_dir": data_dir,
+            "results_dir": results_dir,
+            "mse_table": mse_table,
+            "n_trials_completed": int(results.get("n_trials_completed", 0)),
         }
 
         estimated_any = True
 
-    # Write a combined summary for the paper
-    with open(os.path.join(base_dir, 'robustness_summary.json'), 'w') as f:
+    with open(os.path.join(base_dir, "robustness_summary.json"), "w", encoding="utf-8") as f:
         json.dump(robustness_summary, f, indent=2)
 
     return estimated_any
 
 
 def run_visualization_stage(config: Dict, base_dir: str) -> bool:
-    """
-    Execute visualization stage if needed.
-    
-    Parameters:
-    -----------
-    config : dict
-        Experiment configuration
-    base_dir : str
-        Base directory
-        
-    Returns:
-    --------
-    generated : bool
-        True if figures were generated, False if skipped
-    """
-    figures_dir = os.path.join(base_dir, 'figures')
-    results_dir = os.path.join(base_dir, 'results')
-    data_dir = os.path.join(base_dir, 'data')
-    force = config.get('output', {}).get('force_visualization', False)
-    figure_format = config.get('output', {}).get('figure_format', 'pdf')
-    
-    # Check if figures already exist
+    figures_dir = os.path.join(base_dir, "figures")
+    results_dir = os.path.join(base_dir, "results")
+    data_dir = os.path.join(base_dir, "data")
+
+    force = config.get("output", {}).get("force_visualization", False)
+    figure_format = config.get("output", {}).get("figure_format", "pdf")
+
     if not force and check_directory_status(figures_dir):
         print("Figures directory exists and is non-empty. Skipping visualization.")
         logging.info("Skipping visualization - figures already exist")
         return False
-    
-    # Check if prerequisites exist
+
     if not check_directory_status(results_dir):
         raise FileNotFoundError("Results directory is empty or doesn't exist. Run parameter estimation first.")
     if not check_directory_status(data_dir):
         raise FileNotFoundError("Data directory is empty or doesn't exist. Run data generation first.")
-    
+
     print("Stage 3: Generating visualizations...")
     logging.info("Starting visualization stage")
-    
-    # Create figures directory
+
     os.makedirs(figures_dir, exist_ok=True)
-    
-    # Initialize visualizer
     visualizer = PPLSVisualizer(base_dir, figure_format=figure_format)
-    
-    # Load results
+
     import pickle
-    results_path = os.path.join(results_dir, 'experiment_results.pkl')
-    with open(results_path, 'rb') as f:
+
+    results_path = os.path.join(results_dir, "experiment_results.pkl")
+    with open(results_path, "rb") as f:
         experiment_results = pickle.load(f)
-    
-    # Generate comprehensive summary
+
     visualizer.create_results_summary(experiment_results)
-    
-    # Generate loading comparison for first trial if available
-    if experiment_results.get('trial_results'):
-        first_trial = experiment_results['trial_results'][0]
-        
-        # Plot all components
-        for component_idx in range(config['model']['r']):
+
+    if experiment_results.get("trial_results"):
+        first_trial = experiment_results["trial_results"][0]
+        for component_idx in range(config["model"]["r"]):
             visualizer.plot_loading_comparison(first_trial, component_idx)
-    
-    # Generate parameter recovery plots
-    if 'analysis' in experiment_results:
-        visualizer.plot_parameter_recovery(experiment_results['analysis'])
-    
-    # Generate convergence history
-    if 'trial_results' in experiment_results:
-        visualizer.plot_convergence_history(experiment_results['trial_results'])
-    
-    # Save all figures
+
+    if "analysis" in experiment_results:
+        visualizer.plot_parameter_recovery(experiment_results["analysis"])
+
+    if "trial_results" in experiment_results:
+        visualizer.plot_convergence_history(experiment_results["trial_results"])
+
     visualizer.save_all_figures()
-    
-    print(f"[OK] Visualizations generated")
+
+    print("[OK] Visualizations generated")
     print(f"[OK] Figures saved to: {figures_dir}")
     logging.info("Visualization completed")
-    
+
     return True
 
 
 def check_directory_status(directory: str) -> bool:
-    """
-    Check if directory exists and is non-empty.
-    
-    Parameters:
-    -----------
-    directory : str
-        Directory path to check
-        
-    Returns:
-    --------
-    exists_and_nonempty : bool
-        True if directory exists and contains files
-    """
     if not os.path.exists(directory):
         return False
-    
     try:
         return len(os.listdir(directory)) > 0
     except OSError:
@@ -717,100 +521,69 @@ def check_directory_status(directory: str) -> bool:
 
 
 def validate_configuration(config: Dict) -> bool:
-    """
-    Check configuration validity.
-    
-    Parameters:
-    -----------
-    config : dict
-        Configuration to validate
-        
-    Returns:
-    --------
-    valid : bool
-        True if configuration is valid
-    """
     try:
-        # Check required sections
-        required_sections = ['model', 'algorithms', 'experiment']
+        required_sections = ["model", "algorithms", "experiment"]
         for section in required_sections:
             if section not in config:
                 print(f"Missing required section: {section}")
                 return False
-                
-        # Check model parameters
-        p = config['model']['p']
-        q = config['model']['q']
-        r = config['model']['r']
-        
+
+        p = config["model"]["p"]
+        q = config["model"]["q"]
+        r = config["model"]["r"]
+
         if r > min(p, q):
             print(f"Invalid: r ({r}) must be less than min(p, q) = {min(p, q)}")
             return False
-            
-        if config['model']['n_samples'] < 10:
+
+        if config["model"]["n_samples"] < 10:
             print("Invalid: n_samples must be at least 10")
             return False
-            
-        # Check algorithm parameters
-        if config['algorithms']['common']['n_starts'] < 1:
+
+        if config["algorithms"]["common"]["n_starts"] < 1:
             print("Invalid: n_starts must be at least 1")
             return False
-            
-        # Check experiment parameters
-        if config['experiment']['n_trials'] < 1:
+
+        if config["experiment"]["n_trials"] < 1:
             print("Invalid: n_trials must be at least 1")
             return False
-            
+
         return True
-        
+
     except Exception as e:
         print(f"Configuration validation error: {str(e)}")
         return False
 
 
-def print_experiment_summary(config: Dict, stages_run: list, base_dir: str):
-    """
-    Display experiment summary to console.
-    
-    Parameters:
-    -----------
-    config : dict
-        Experiment configuration
-    stages_run : list
-        List of stages that were executed
-    base_dir : str
-        Base directory path
-    """
-    print("\n" + "="*60)
+def print_experiment_summary(config: Dict, stages_run: list, base_dir: str) -> None:
+    print("\n" + "=" * 60)
     print("EXPERIMENT SUMMARY")
-    print("="*60)
-    
-    print(f"\nConfiguration:")
+    print("=" * 60)
+
+    print("\nConfiguration:")
     print(f"  Model dimensions: p={config['model']['p']}, q={config['model']['q']}, r={config['model']['r']}")
     print(f"  Sample size: {config['model']['n_samples']}")
     print(f"  Number of trials: {config['experiment']['n_trials']}")
     print(f"  Starting points: {config['algorithms']['common']['n_starts']}")
-    
+
     print(f"\nStages executed: {', '.join(stages_run) if stages_run else 'None (all outputs existed)'}")
-    
+
     print("\nOutput directories:")
     print(f"  Data (low): {os.path.join(base_dir, 'data')}")
     print(f"  Results (low): {os.path.join(base_dir, 'results')}")
     print(f"  Figures: {os.path.join(base_dir, 'figures')}")
     print(f"  Logs: {os.path.join(base_dir, 'logs')}")
 
-    # If multiple noise levels are configured, mention the additional directories
-    noise_levels = config.get('data_generation', {}).get('noise_levels', {})
+    noise_levels = config.get("data_generation", {}).get("noise_levels", {})
     if isinstance(noise_levels, dict):
-        extra_levels = [k for k in noise_levels.keys() if k != 'low']
+        extra_levels = [k for k in noise_levels.keys() if k != "low"]
         for level in extra_levels:
-            print(f"  Data ({level}): {os.path.join(base_dir, f'data_{level}')}")
-            print(f"  Results ({level}): {os.path.join(base_dir, f'results_{level}')}")
+            print(f"  Data ({level}): {os.path.join(base_dir, f'data_{level}')} ")
+            print(f"  Results ({level}): {os.path.join(base_dir, f'results_{level}')} ")
 
     print(f"  Robustness summary: {os.path.join(base_dir, 'robustness_summary.json')}")
-    
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

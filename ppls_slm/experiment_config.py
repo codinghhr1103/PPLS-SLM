@@ -85,3 +85,33 @@ def coerce_bool(d: MutableMapping[str, Any], key: str, *, ctx: str) -> bool:
         raise ConfigError(f"Missing key {key} for {ctx}")
     d[key] = bool(d[key])
     return bool(d[key])
+
+
+def deep_merge(defaults: Mapping[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
+    """Deep-merge two mapping objects.
+
+    - `override` wins on conflicts.
+    - Nested dicts are merged recursively.
+
+    This is intentionally small and dependency-free (no yaml/omegaconf/pydantic).
+    """
+
+    merged: Dict[str, Any] = dict(defaults)
+    for k, v in override.items():
+        if isinstance(v, Mapping) and isinstance(merged.get(k), Mapping):
+            merged[k] = deep_merge(merged[k], v)  # type: ignore[arg-type]
+        else:
+            merged[k] = v
+    return merged
+
+
+def load_config_with_defaults(path: str | Path, *, defaults: Mapping[str, Any]) -> Dict[str, Any]:
+    """Load config JSON then apply a deep-merge of `defaults`.
+
+    This keeps entry points tolerant to missing keys while still allowing a single source
+    of truth when `config.json` is fully specified.
+    """
+
+    cfg = load_config(path)
+    return deep_merge(defaults, cfg)
+

@@ -13,9 +13,12 @@ All helpers here follow the paper's evaluation protocol:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence
 
 import numpy as np
+
+from ppls_slm.apps.data_utils import standardize_train_test
+
 
 
 @dataclass
@@ -56,24 +59,7 @@ def compute_regression_metrics(Y_true: np.ndarray, Y_pred: np.ndarray) -> Regres
     )
 
 
-def _standardize_train_test(
-    X_train: np.ndarray,
-    Y_train: np.ndarray,
-    X_test: np.ndarray,
-    Y_test: np.ndarray,
-):
-    """Standardise X and Y using training-set statistics only."""
-    from sklearn.preprocessing import StandardScaler
 
-    scaler_x = StandardScaler()
-    scaler_y = StandardScaler()
-
-    X_train_s = scaler_x.fit_transform(X_train)
-    Y_train_s = scaler_y.fit_transform(Y_train)
-    X_test_s = scaler_x.transform(X_test)
-    Y_test_s = scaler_y.transform(Y_test)
-
-    return X_train_s, Y_train_s, X_test_s, Y_test_s, scaler_x, scaler_y
 
 
 def run_plsr_prediction(
@@ -136,11 +122,12 @@ def run_ridge_prediction(
     if alphas is None:
         alphas = np.logspace(-4, 4, 50)
 
-    X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = _standardize_train_test(
+    X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = standardize_train_test(
         X_train, Y_train, X_test, Y_test
     )
 
     q = Y_train_s.shape[1]
+
 
     if cv is None:
         ridge = RidgeCV(alphas=np.asarray(list(alphas), dtype=float), cv=None)

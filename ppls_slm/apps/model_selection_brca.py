@@ -20,7 +20,8 @@ import pandas as pd
 
 from ppls_slm.algorithms import InitialPointGenerator, ScalarLikelihoodMethod
 from ppls_slm.model_selection import compute_bic, select_r_by_cv_prediction_mse
-from ppls_slm.apps.brca_prediction import load_brca_combined_raw
+from ppls_slm.apps.data_utils import load_brca_combined_raw
+
 
 
 def _zscore_global(X: np.ndarray) -> np.ndarray:

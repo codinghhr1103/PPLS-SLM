@@ -26,13 +26,20 @@ Writes CSVs under --output_dir (default: results_prediction_brca):
 from __future__ import annotations
 
 import argparse
-import io
 import os
-import zipfile
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+from ppls_slm.apps.data_utils import (
+    load_brca_combined_raw,
+    standardize_train_test,
+    top_variance_indices,
+    unstandardize_cov,
+    unstandardize_y,
+)
+
 
 from ppls_slm.algorithms import EMAlgorithm, InitialPointGenerator, ScalarLikelihoodMethod
 from ppls_slm.apps.prediction_baselines import compute_regression_metrics, run_plsr_prediction, run_ridge_prediction
@@ -42,98 +49,17 @@ from ppls_slm.apps.prediction import (
     predict_conditional_covariance,
     predict_conditional_mean,
     select_shrinkage_alpha_cv,
+    slm_method_name,
 )
 
 
-def _slm_method_name(*, slm_optimizer: str, adaptive: bool) -> str:
-    opt = str(slm_optimizer).lower()
-    if opt in ("manifold", "pymanopt", "riemannian", "stiefel"):
-        return "PPLS-SLM-Manifold-Adaptive" if bool(adaptive) else "PPLS-SLM-Manifold"
-    return "PPLS-SLM-Adaptive" if bool(adaptive) else "PPLS-SLM"
 
 
 
-def load_brca_combined_raw(path: str) -> Tuple[np.ndarray, np.ndarray]:
-
-    """Load the bundled BRCA combined dataset without global standardisation."""
-    lower = path.lower()
-
-    if lower.endswith(".zip"):
-        with zipfile.ZipFile(path) as z:
-            names = z.namelist()
-            if not names:
-                raise ValueError(f"Empty zip file: {path}")
-            data = z.read(names[0])
-            df = pd.read_csv(io.BytesIO(data))
-    else:
-        df = pd.read_csv(path)
-
-    rs_cols = [c for c in df.columns if str(c).startswith("rs_")]
-    pp_cols = [c for c in df.columns if str(c).startswith("pp_")]
-    if not rs_cols or not pp_cols:
-        raise ValueError(
-            "BRCA combined dataset must contain `rs_` (genes) and `pp_` (proteins) columns. "
-            f"Found rs_={len(rs_cols)}, pp_={len(pp_cols)}"
-        )
-
-    X = df[rs_cols].to_numpy(dtype=float)
-    Y = df[pp_cols].to_numpy(dtype=float)
-
-    # Drop rows/cols with NaN (defensive; bundled data is usually clean)
-    good_rows = np.isfinite(X).all(axis=1) & np.isfinite(Y).all(axis=1)
-    X = X[good_rows]
-    Y = Y[good_rows]
-
-    good_x_cols = np.isfinite(X).all(axis=0)
-    good_y_cols = np.isfinite(Y).all(axis=0)
-    X = X[:, good_x_cols]
-    Y = Y[:, good_y_cols]
-
-    return X, Y
 
 
-def _standardize_train_test(X_train, Y_train, X_test, Y_test):
-    from sklearn.preprocessing import StandardScaler
-
-    sx = StandardScaler()
-    sy = StandardScaler()
-
-    X_train_s = sx.fit_transform(X_train)
-    Y_train_s = sy.fit_transform(Y_train)
-    X_test_s = sx.transform(X_test)
-    Y_test_s = sy.transform(Y_test)
-
-    return X_train_s, Y_train_s, X_test_s, Y_test_s, sx, sy
 
 
-def _unstandardize_y(y_s, sy):
-    return sy.inverse_transform(y_s)
-
-
-def _unstandardize_cov(Cov_s, sy):
-    scale = getattr(sy, "scale_", None)
-    if scale is None:
-        return Cov_s
-    D = np.diag(np.asarray(scale, dtype=float))
-    return D @ Cov_s @ D
-
-
-def _top_variance_indices(M: np.ndarray, k: Optional[int]) -> Optional[np.ndarray]:
-    """Select top-k columns by variance.
-
-    IMPORTANT: This should be computed on the training split only.
-    """
-    if k is None:
-        return None
-    k = int(k)
-    if k <= 0 or k >= M.shape[1]:
-        return None
-
-    v = np.var(np.asarray(M, dtype=float), axis=0)
-    # Deterministic tie-breaking by column index via stable sort.
-    idx_desc = np.argsort(-v, kind="mergesort")
-    idx = np.sort(idx_desc[:k])
-    return idx
 
 
 def _fit_ppls_slm(
@@ -261,7 +187,8 @@ def run_brca_prediction(
     indices = rng.permutation(N)
     folds = np.array_split(indices, int(n_folds))
 
-    slm_method = _slm_method_name(slm_optimizer=slm_optimizer, adaptive=slm_adaptive_shrinkage)
+    slm_method = slm_method_name(slm_optimizer=slm_optimizer, adaptive=slm_adaptive_shrinkage)
+
 
     rows: List[Dict] = []
 
@@ -275,8 +202,9 @@ def run_brca_prediction(
         X_train0, Y_train0 = X[train_idx], Y[train_idx]
         X_test0, Y_test0 = X[test_idx], Y[test_idx]
 
-        x_idx = _top_variance_indices(X_train0, x_top_k)
-        y_idx = _top_variance_indices(Y_train0, y_top_k)
+        x_idx = top_variance_indices(X_train0, x_top_k)
+        y_idx = top_variance_indices(Y_train0, y_top_k)
+
 
         X_train = X_train0 if x_idx is None else X_train0[:, x_idx]
         X_test = X_test0 if x_idx is None else X_test0[:, x_idx]
@@ -284,7 +212,8 @@ def run_brca_prediction(
         Y_test = Y_test0 if y_idx is None else Y_test0[:, y_idx]
 
         # Standardize once per fold for PPLS-based methods.
-        X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = _standardize_train_test(X_train, Y_train, X_test, Y_test)
+        X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = standardize_train_test(X_train, Y_train, X_test, Y_test)
+
 
         fold_data.append(
             {
@@ -373,8 +302,9 @@ def run_brca_prediction(
                 )
 
             y_pred_s, _Cov_s = _predict_ppls(fd["X_test_s"], slm_params, shrinkage_alpha=shrinkage_alpha_slm)
-            y_pred = _unstandardize_y(y_pred_s, fd["sy"])
+            y_pred = unstandardize_y(y_pred_s, fd["sy"])
             m = compute_regression_metrics(fd["Y_test"], y_pred)
+
             rows.append(
                 {
                     "method": slm_method,
@@ -403,8 +333,9 @@ def run_brca_prediction(
             print(f"[PPLS-EM] r={r} fold {fold_idx + 1}/{n_folds} (starts={em_n_starts}, max_iter={em_max_iter})...", flush=True)
             em_params = _fit_ppls_em(fd["X_train_s"], fd["Y_train_s"], r=r, n_starts=em_n_starts, seed=seed + fold_idx, max_iter=em_max_iter, tol=em_tol)
             y_pred_s, _Cov_s = _predict_ppls(fd["X_test_s"], em_params)
-            y_pred = _unstandardize_y(y_pred_s, fd["sy"])
+            y_pred = unstandardize_y(y_pred_s, fd["sy"])
             m = compute_regression_metrics(fd["Y_test"], y_pred)
+
             rows.append(
                 {
                     "method": "PPLS-EM",

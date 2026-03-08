@@ -25,10 +25,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from ppls_slm.data_generator import SineDataGenerator
-from ppls_slm.ppls_model import estimate_noise_variance, NoiseEstimator, PPLSModel
 from ppls_slm.algorithms import InitialPointGenerator, ScalarLikelihoodMethod
-
+from ppls_slm.data_generator import SineDataGenerator
+from ppls_slm.ppls_model import NoiseEstimator, PPLSModel, estimate_noise_variance
+from ppls_slm.utils import set_global_seed
 
 
 @dataclass(frozen=True)
@@ -48,9 +48,6 @@ def _log(msg: str) -> None:
     # Keep logs visible when run under scripts/run_all_experiments.py tee runner.
     print(msg, flush=True)
 
-
-def _set_global_seed(seed: int) -> None:
-    np.random.seed(int(seed))
 
 
 def _parse_csv_floats(s: str) -> List[float]:
@@ -665,7 +662,8 @@ def main() -> None:
     args = parser.parse_args()
 
     out_dir = _ensure_dir(args.output_dir)
-    _set_global_seed(args.seed)
+    set_global_seed(args.seed)
+
 
     # If user asks for a fast run, shrink only the expensive parts (exp2), unless explicitly overridden.
     if bool(getattr(args, "fast", False)):

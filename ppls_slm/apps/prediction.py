@@ -150,7 +150,7 @@ def predict_conditional_covariance(
     *,
     shrinkage_alpha: float = 1.0,
 ) -> np.ndarray:
-    """Compute \(\mathrm{Cov}[y_{new}\mid x_{new}]\) (x-independent).
+    r"""Compute \(\mathrm{Cov}[y_{new}\mid x_{new}]\) (x-independent).
 
     The adaptive-shrinkage parameter \(\alpha\) enters through
 
@@ -219,6 +219,15 @@ def _slm_method_name_from_cfg(slm_cfg: Dict) -> str:
     return "PPLS-SLM-Adaptive" if adaptive else "PPLS-SLM"
 
 
+def slm_method_name(*, slm_optimizer: str, adaptive: bool) -> str:
+    """Human-readable method name used in result tables/plots."""
+
+    opt = str(slm_optimizer).lower()
+    if opt in ("manifold", "pymanopt", "riemannian", "stiefel"):
+        return "PPLS-SLM-Manifold-Adaptive" if bool(adaptive) else "PPLS-SLM-Manifold"
+    return "PPLS-SLM-Adaptive" if bool(adaptive) else "PPLS-SLM"
+
+
 def select_shrinkage_alpha_cv(
     X_train_s: np.ndarray,
     Y_train_s: np.ndarray,
@@ -228,7 +237,7 @@ def select_shrinkage_alpha_cv(
     n_folds: int = 5,
     seed: int = 0,
 ) -> Tuple[float, pd.DataFrame]:
-    """Select alpha by inner CV using fixed PPLS parameters.
+    r"""Select alpha by inner CV using fixed PPLS parameters.
 
     We do NOT refit PPLS per inner fold; we only vary \(\alpha\) in the prediction
     rule, as described in the paper revision.
