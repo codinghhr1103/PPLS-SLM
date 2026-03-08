@@ -75,9 +75,10 @@ def run_plsr_prediction(
     """
     from sklearn.cross_decomposition import PLSRegression
 
-    X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = _standardize_train_test(
+    X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = standardize_train_test(
         X_train, Y_train, X_test, Y_test
     )
+
 
     plsr = PLSRegression(n_components=int(n_components), scale=False)
     plsr.fit(X_train_s, Y_train_s)

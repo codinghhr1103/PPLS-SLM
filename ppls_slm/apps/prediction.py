@@ -42,7 +42,8 @@ from __future__ import annotations
 import argparse
 import os
 import warnings
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
 
 
 # NOTE (Windows stability): some BLAS/LAPACK builds may hang or become extremely slow
@@ -145,11 +146,89 @@ def predict_conditional_mean(
     return x_new @ A.T
 
 
+def posterior_latent_mean(
+    x_new: np.ndarray,
+    params: Dict,
+    *,
+    shrinkage_alpha: float = 1.0,
+) -> np.ndarray:
+    r"""Compute the posterior mean \\(\mathbb{E}[t_{new}\mid x_{new}]\\)."""
+
+    W = params["W"]
+    Sigma_t = params["Sigma_t"]
+    sigma_e2 = float(params["sigma_e2"])
+
+    a = float(shrinkage_alpha)
+    if not (a > 0):
+        raise ValueError(f"shrinkage_alpha must be > 0, got {a}")
+
+    Sigma_xx = W @ Sigma_t @ W.T + (a * sigma_e2) * np.eye(W.shape[0])
+    WS = W @ Sigma_t
+
+    L = np.linalg.cholesky(Sigma_xx + 1e-9 * np.eye(Sigma_xx.shape[0]))
+    tmp = np.linalg.solve(L, WS)
+    tmp = np.linalg.solve(L.T, tmp)  # Sigma_xx^{-1} W Sigma_t
+
+    if x_new.ndim == 1:
+        return x_new @ tmp
+    return x_new @ tmp
+
+
+def fit_latent_recalibration_head(
+    X_train_s: np.ndarray,
+    Y_train_s: np.ndarray,
+    params: Dict,
+    *,
+    shrinkage_alpha: float = 1.0,
+    ridge_alphas: Optional[Sequence[float]] = None,
+    cv: Optional[int] = None,
+    include_original_x: bool = False,
+):
+
+    """Fit a low-dimensional ridge head on posterior latent means.
+
+    This keeps the PPLS latent representation but relaxes the strict diagonal
+    latent-to-response map during prediction, which is especially helpful in
+    high-dimensional real-data settings.
+    """
+    from sklearn.linear_model import RidgeCV
+
+    if ridge_alphas is None:
+        ridge_alphas = np.logspace(-4, 4, 17)
+
+    Z_train = posterior_latent_mean(X_train_s, params, shrinkage_alpha=float(shrinkage_alpha))
+    X_head = np.hstack([Z_train, X_train_s]) if bool(include_original_x) else Z_train
+    head = RidgeCV(alphas=np.asarray(list(ridge_alphas), dtype=float), cv=cv, fit_intercept=True)
+    head.fit(X_head, Y_train_s)
+    return {
+        "model": head,
+        "include_original_x": bool(include_original_x),
+    }
+
+
+
+def predict_recalibrated_mean(
+    X_new_s: np.ndarray,
+    params: Dict,
+    head,
+    *,
+    shrinkage_alpha: float = 1.0,
+) -> np.ndarray:
+    """Predict Y from posterior latent means using a fitted low-dimensional head."""
+    Z_new = posterior_latent_mean(X_new_s, params, shrinkage_alpha=float(shrinkage_alpha))
+    model = head["model"] if isinstance(head, dict) else head
+    include_original_x = bool(head.get("include_original_x", False)) if isinstance(head, dict) else False
+    X_head = np.hstack([Z_new, X_new_s]) if include_original_x else Z_new
+    return np.asarray(model.predict(X_head), dtype=float)
+
+
+
 def predict_conditional_covariance(
     params: Dict,
     *,
     shrinkage_alpha: float = 1.0,
 ) -> np.ndarray:
+
     r"""Compute \(\mathrm{Cov}[y_{new}\mid x_{new}]\) (x-independent).
 
     The adaptive-shrinkage parameter \(\alpha\) enters through
@@ -275,6 +354,142 @@ def select_shrinkage_alpha_cv(
     return float(best_row["shrinkage_alpha"]), cv_table
 
 
+def select_shrinkage_alpha_nested_cv(
+    X_train_s: np.ndarray,
+    Y_train_s: np.ndarray,
+    *,
+    fit_model_fn: Callable[[np.ndarray, np.ndarray, int], Dict],
+    alpha_grid: Sequence[float],
+    n_folds: int = 5,
+    seed: int = 0,
+    verbose: bool = False,
+    progress_label: Optional[str] = None,
+    validation_predictor_fn: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray, Dict, float], np.ndarray]] = None,
+) -> Tuple[float, pd.DataFrame, float]:
+
+    r"""Select alpha via nested inner CV with refits on inner-training splits.
+
+    Unlike :func:`select_shrinkage_alpha_cv`, this routine refits the PPLS model on
+    each inner-training split and then evaluates all alpha candidates on the held-out
+    validation block. This avoids the optimistic bias of recycling outer-fold
+    parameters for inner validation, and in practice yields more informative
+    fold-to-fold alpha variation on both synthetic and BRCA prediction tasks.
+    """
+    from sklearn.model_selection import KFold
+
+    alpha_grid = sorted({float(a) for a in alpha_grid if float(a) > 0.0})
+    if not alpha_grid:
+        raise ValueError("alpha_grid must contain at least one positive value")
+
+    n = int(X_train_s.shape[0])
+    k = int(min(max(2, int(n_folds)), n))
+    kf = KFold(n_splits=k, shuffle=True, random_state=int(seed))
+
+    rows: List[Dict] = []
+    scale_rows: List[Dict] = []
+
+    for inner_fold, (tr, va) in enumerate(kf.split(X_train_s), start=1):
+        if verbose and progress_label:
+            print(f"{progress_label} inner-fit {inner_fold}/{k}...", flush=True)
+
+        params_inner = fit_model_fn(X_train_s[tr], Y_train_s[tr], int(seed + inner_fold - 1))
+        X_va = X_train_s[va]
+        Y_va = Y_train_s[va]
+
+        for a in alpha_grid:
+            if validation_predictor_fn is None:
+                Y_hat = predict_conditional_mean(X_va, params_inner, shrinkage_alpha=float(a))
+            else:
+                Y_hat = validation_predictor_fn(X_train_s[tr], Y_train_s[tr], X_va, params_inner, float(a))
+            mse = float(np.mean((Y_va - Y_hat) ** 2))
+            rows.append({"inner_fold": inner_fold, "shrinkage_alpha": float(a), "mse": mse})
+
+            Cov_s = predict_conditional_covariance(params_inner, shrinkage_alpha=float(a))
+
+            model_var = float(np.mean(np.diag(Cov_s)))
+            if np.isfinite(model_var) and model_var > 0.0:
+                resid_var = float(np.mean((Y_va - Y_hat) ** 2))
+                scale = resid_var / max(model_var, 1e-12)
+                if np.isfinite(scale) and scale > 0.0:
+                    scale_rows.append(
+                        {
+                            "inner_fold": inner_fold,
+                            "shrinkage_alpha": float(a),
+                            "covariance_scale": float(scale),
+                        }
+                    )
+
+    cv_long = pd.DataFrame(rows)
+    if cv_long.empty:
+        raise ValueError("nested alpha CV produced no validation rows")
+
+    cv_table = (
+        cv_long.groupby("shrinkage_alpha", sort=True)["mse"]
+        .agg([("mse_mean", "mean"), ("mse_std", "std")])
+        .reset_index()
+        .sort_values("shrinkage_alpha")
+        .reset_index(drop=True)
+    )
+    cv_table["mse_std"] = cv_table["mse_std"].fillna(0.0)
+    cv_table["distance_to_one"] = np.abs(np.log(cv_table["shrinkage_alpha"].astype(float)))
+
+    best_row = cv_table.sort_values(["mse_mean", "mse_std", "distance_to_one", "shrinkage_alpha"]).iloc[0]
+    alpha_star = float(best_row["shrinkage_alpha"])
+
+    covariance_scale = 1.0
+    if scale_rows:
+        scale_df = pd.DataFrame(scale_rows)
+        best_scales = scale_df.loc[np.isclose(scale_df["shrinkage_alpha"].to_numpy(dtype=float), alpha_star), "covariance_scale"]
+        if len(best_scales):
+            covariance_scale = float(np.clip(np.median(best_scales.to_numpy(dtype=float)), 0.25, 6.0))
+
+    cv_table = cv_table.drop(columns=["distance_to_one"])
+    return alpha_star, cv_table, covariance_scale
+
+
+def estimate_predictive_covariance_scale_cv(
+
+    X_train_s: np.ndarray,
+    Y_train_s: np.ndarray,
+    *,
+    params: Dict,
+    shrinkage_alpha: float,
+    n_folds: int = 5,
+    seed: int = 0,
+) -> float:
+    """Estimate a scalar covariance inflation factor from inner-CV residuals.
+
+    The predictive covariance in PPLS is x-independent, so a single multiplicative
+    scale often corrects systematic under-dispersion at negligible extra cost.
+    """
+    from sklearn.model_selection import KFold
+
+    n = int(X_train_s.shape[0])
+    k = int(min(max(2, int(n_folds)), n))
+    kf = KFold(n_splits=k, shuffle=True, random_state=int(seed))
+
+    Cov_s = predict_conditional_covariance(params, shrinkage_alpha=float(shrinkage_alpha))
+    model_var = float(np.mean(np.diag(Cov_s)))
+    if not np.isfinite(model_var) or model_var <= 0.0:
+        return 1.0
+
+    scales: List[float] = []
+    for _tr, va in kf.split(X_train_s):
+        X_va = X_train_s[va]
+        Y_va = Y_train_s[va]
+        Y_hat = predict_conditional_mean(X_va, params, shrinkage_alpha=float(shrinkage_alpha))
+        resid_var = float(np.mean((Y_va - Y_hat) ** 2))
+        scale = resid_var / max(model_var, 1e-12)
+        if np.isfinite(scale) and scale > 0.0:
+            scales.append(scale)
+
+    if not scales:
+        return 1.0
+
+    return float(np.clip(np.median(scales), 0.25, 6.0))
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Fold-level helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -313,24 +528,52 @@ def _unstandardize_cov_y(Cov_s: np.ndarray, sy) -> np.ndarray:
 
 
 def _data_driven_theta0(X_train_s: np.ndarray, Y_train_s: np.ndarray, *, r: int) -> np.ndarray:
-    """Deterministic, data-driven starting point.
+    """Deterministic PLS-style starting point based on cross-covariance.
 
-    Uses the first r right-singular vectors of X and Y as orthonormal loadings.
-    This typically reduces the number of trust-constr iterations and makes the
-    multi-start strategy much cheaper.
+    Compared with separate PCA starts on X and Y, the leading singular vectors of
+    X^T Y align the initial W/C pair with directions that are directly predictive
+    across the two views. This tends to improve fit quality for the prediction
+    benchmarks while remaining essentially free computationally.
     """
-    # X_train_s: (N, p)  => Vt_x.T: (p, p)
-    _Ux, _sx, Vt_x = np.linalg.svd(X_train_s, full_matrices=False)
-    W0 = Vt_x.T[:, :r]
+    eps = 1e-3
+    n = max(1, int(X_train_s.shape[0]))
 
-    _Uy, _sy, Vt_y = np.linalg.svd(Y_train_s, full_matrices=False)
-    C0 = Vt_y.T[:, :r]
+    try:
+        cross = (X_train_s.T @ Y_train_s) / float(n)
+        Uxy, _sxy, Vtxy = np.linalg.svd(cross, full_matrices=False)
+        W0 = Uxy[:, :r]
+        C0 = Vtxy.T[:, :r]
+    except np.linalg.LinAlgError:
+        _Ux, _sx, Vt_x = np.linalg.svd(X_train_s, full_matrices=False)
+        _Uy, _sy, Vt_y = np.linalg.svd(Y_train_s, full_matrices=False)
+        W0 = Vt_x.T[:, :r]
+        C0 = Vt_y.T[:, :r]
 
-    theta0 = np.linspace(1.0, 0.5, int(r))
-    b0 = np.linspace(1.0, 0.5, int(r))
-    sigma_h2_0 = 0.1
+    T0 = X_train_s @ W0
+    U0 = Y_train_s @ C0
+
+    cross_diag = np.mean(T0 * U0, axis=0)
+    signs = np.where(cross_diag < 0.0, -1.0, 1.0)
+    C0 = C0 * signs[np.newaxis, :]
+    U0 = U0 * signs[np.newaxis, :]
+
+    theta0 = np.clip(np.var(T0, axis=0, ddof=0), eps, 5.0)
+    cross_diag = np.abs(np.mean(T0 * U0, axis=0))
+    b0 = np.clip(cross_diag / (theta0 + 1e-8), eps, 5.0)
+
+    signal = theta0 * b0
+    order = np.argsort(-signal)
+    W0 = W0[:, order]
+    C0 = C0[:, order]
+    T0 = T0[:, order]
+    U0 = U0[:, order]
+    theta0 = theta0[order]
+    b0 = b0[order]
+
+    sigma_h2_0 = float(np.clip(np.mean((U0 - T0 * b0[np.newaxis, :]) ** 2), eps, 2.0))
 
     return np.concatenate([W0.flatten(), C0.flatten(), theta0, b0, [sigma_h2_0]])
+
 
 
 
@@ -443,8 +686,62 @@ def _predict_ppls(
     return y_pred_s, Cov_s
 
 
+def _select_slm_shrinkage_and_scale(
+    X_train_s: np.ndarray,
+    Y_train_s: np.ndarray,
+    *,
+    params_outer: Dict,
+    fold_seed: int,
+    slm_cfg: Dict,
+    fit_inner_model_fn: Callable[[np.ndarray, np.ndarray, int], Dict],
+    progress_label: Optional[str] = None,
+) -> Tuple[float, float, Optional[pd.DataFrame]]:
+    """Tune adaptive shrinkage and covariance scaling for SLM prediction."""
+
+    if not bool(slm_cfg.get("adaptive_shrinkage", False)):
+        return 1.0, 1.0, None
+
+    alpha_grid = slm_cfg.get(
+        "shrinkage_alpha_grid",
+        [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0],
+    )
+    n_inner = int(slm_cfg.get("adaptive_shrinkage_folds", 5))
+    mode = str(slm_cfg.get("adaptive_shrinkage_mode", "nested_refit")).strip().lower()
+
+    if mode in ("nested_refit", "nested", "refit"):
+        shrinkage_alpha, cv_table, covariance_scale = select_shrinkage_alpha_nested_cv(
+            X_train_s,
+            Y_train_s,
+            fit_model_fn=fit_inner_model_fn,
+            alpha_grid=alpha_grid,
+            n_folds=n_inner,
+            seed=int(fold_seed),
+            verbose=bool(slm_cfg.get("adaptive_shrinkage_verbose", False)),
+            progress_label=progress_label,
+        )
+        return float(shrinkage_alpha), float(covariance_scale), cv_table
+
+    shrinkage_alpha, cv_table = select_shrinkage_alpha_cv(
+        X_train_s,
+        Y_train_s,
+        params=params_outer,
+        alpha_grid=alpha_grid,
+        n_folds=n_inner,
+        seed=int(fold_seed),
+    )
+    covariance_scale = estimate_predictive_covariance_scale_cv(
+        X_train_s,
+        Y_train_s,
+        params=params_outer,
+        shrinkage_alpha=shrinkage_alpha,
+        n_folds=n_inner,
+        seed=int(fold_seed),
+    )
+    return float(shrinkage_alpha), float(covariance_scale), cv_table
+
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 #  Single-fold worker (for parallel CV)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -513,24 +810,40 @@ def _run_single_fold_prediction(
 
 
     slm_method = _slm_method_name_from_cfg(slm_cfg)
-    shrinkage_alpha_slm = 1.0
-    if bool(slm_cfg.get("adaptive_shrinkage", False)):
-        alpha_grid = slm_cfg.get(
-            "shrinkage_alpha_grid",
-            [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0],
-        )
-        n_inner = int(slm_cfg.get("adaptive_shrinkage_folds", 5))
-        shrinkage_alpha_slm, _cv_table = select_shrinkage_alpha_cv(
-            X_train_s,
-            Y_train_s,
-            params=slm_params,
-            alpha_grid=alpha_grid,
-            n_folds=n_inner,
-            seed=int(seed + fold_idx),
-        )
+    inner_n_starts = int(slm_cfg.get("adaptive_shrinkage_inner_n_starts", max(1, min(3, int(n_starts)))))
+    inner_max_iter = int(slm_cfg.get("adaptive_shrinkage_inner_max_iter", max(40, min(int(slm_max_iter), 120))))
+    shrinkage_alpha_slm, covariance_scale_slm, _cv_table = _select_slm_shrinkage_and_scale(
+        X_train_s,
+        Y_train_s,
+        params_outer=slm_params,
+        fold_seed=int(seed + fold_idx),
+        slm_cfg=slm_cfg,
+        fit_inner_model_fn=lambda X_in, Y_in, inner_seed: _fit_ppls_params_slm(
+            X_in,
+            Y_in,
+            r=r,
+            n_starts=inner_n_starts,
+            seed=int(inner_seed),
+            slm_max_iter=inner_max_iter,
+            slm_optimizer=str(slm_cfg["optimizer"]),
+            slm_gtol=float(slm_cfg["gtol"]),
+            slm_xtol=float(slm_cfg["xtol"]),
+            slm_barrier_tol=float(slm_cfg["barrier_tol"]),
+            slm_constraint_slack=float(slm_cfg["constraint_slack"]),
+            slm_progress_every=int(slm_cfg["progress_every"]),
+            slm_early_stop_patience=slm_cfg.get("early_stop_patience"),
+            slm_early_stop_rel_improvement=slm_cfg.get("early_stop_rel_improvement"),
+            slm_data_start=bool(slm_cfg["data_start"]),
+            slm_verbose=bool(slm_cfg.get("adaptive_shrinkage_verbose", False)),
+        ),
+        progress_label=f"    [fold {fold_idx + 1}] adaptive-shrinkage",
+    )
 
     y_pred_slm_s, Cov_slm_s = _predict_ppls(X_test_s, params=slm_params, shrinkage_alpha=shrinkage_alpha_slm)
+
+    Cov_slm_s = float(covariance_scale_slm) * Cov_slm_s
     y_pred_slm = _unstandardize_y_pred(y_pred_slm_s, sy)
+
 
     m_slm = compute_regression_metrics(Y_test, y_pred_slm)
     metrics_rows.append(
@@ -555,7 +868,9 @@ def _run_single_fold_prediction(
                 "alpha": float(a),
                 "coverage": cov,
                 "shrinkage_alpha": float(shrinkage_alpha_slm),
+                "covariance_scale": float(covariance_scale_slm),
             }
+
         )
 
 
@@ -798,23 +1113,39 @@ def kfold_prediction_benchmark(
             print(f"    Done PPLS-SLM in {time.time()-_t_fit:.1f}s{iters_s}.", flush=True)
 
         slm_method = _slm_method_name_from_cfg(slm_cfg)
-        shrinkage_alpha_slm = 1.0
-        if bool(slm_cfg.get("adaptive_shrinkage", False)):
-            alpha_grid = slm_cfg.get(
-                "shrinkage_alpha_grid",
-                [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0],
-            )
-            n_inner = int(slm_cfg.get("adaptive_shrinkage_folds", 5))
-            shrinkage_alpha_slm, _cv_table = select_shrinkage_alpha_cv(
-                X_train_s,
-                Y_train_s,
-                params=slm_params,
-                alpha_grid=alpha_grid,
-                n_folds=n_inner,
-                seed=int(seed + fold_idx),
-            )
+        inner_n_starts = int(slm_cfg.get("adaptive_shrinkage_inner_n_starts", max(1, min(3, int(n_starts)))))
+        inner_max_iter = int(slm_cfg.get("adaptive_shrinkage_inner_max_iter", max(40, min(int(slm_max_iter), 120))))
+        shrinkage_alpha_slm, covariance_scale_slm, _cv_table = _select_slm_shrinkage_and_scale(
+            X_train_s,
+            Y_train_s,
+            params_outer=slm_params,
+            fold_seed=int(seed + fold_idx),
+            slm_cfg=slm_cfg,
+            fit_inner_model_fn=lambda X_in, Y_in, inner_seed: _fit_ppls_params_slm(
+                X_in,
+                Y_in,
+                r=r,
+                n_starts=inner_n_starts,
+                seed=int(inner_seed),
+                slm_max_iter=inner_max_iter,
+                slm_optimizer=str(slm_cfg["optimizer"]),
+                slm_gtol=float(slm_cfg["gtol"]),
+                slm_xtol=float(slm_cfg["xtol"]),
+                slm_barrier_tol=float(slm_cfg["barrier_tol"]),
+                slm_constraint_slack=float(slm_cfg["constraint_slack"]),
+                slm_progress_every=int(slm_cfg["progress_every"]),
+                slm_early_stop_patience=slm_cfg.get("early_stop_patience"),
+                slm_early_stop_rel_improvement=slm_cfg.get("early_stop_rel_improvement"),
+                slm_data_start=bool(slm_cfg["data_start"]),
+                slm_verbose=bool(slm_cfg.get("adaptive_shrinkage_verbose", False)),
+            ),
+            progress_label=f"    [fold {fold_idx + 1}] adaptive-shrinkage",
+        )
 
         y_pred_slm_s, Cov_slm_s = _predict_ppls(X_test_s, params=slm_params, shrinkage_alpha=shrinkage_alpha_slm)
+        Cov_slm_s = float(covariance_scale_slm) * Cov_slm_s
+
+
 
         y_pred_slm = _unstandardize_y_pred(y_pred_slm_s, sy)
 
@@ -842,7 +1173,9 @@ def kfold_prediction_benchmark(
                     "alpha": float(a),
                     "coverage": cov,
                     "shrinkage_alpha": float(shrinkage_alpha_slm),
+                    "covariance_scale": float(covariance_scale_slm),
                 }
+
             )
 
 
@@ -1165,8 +1498,14 @@ def main():
         "early_stop_rel_improvement": slm_early_stop_rel_improvement,
         "data_start": bool(pred_cfg["slm_data_start"]),
         "verbose": bool(pred_cfg["slm_verbose"]),
+        "n_starts": int(n_starts),
+        "max_iter": int(max_iter),
         # Adaptive shrinkage at prediction time (does not change estimation).
         "adaptive_shrinkage": bool(pred_cfg.get("slm_adaptive_shrinkage", False)),
+        "adaptive_shrinkage_mode": str(pred_cfg.get("slm_adaptive_shrinkage_mode", "nested_refit")),
+        "adaptive_shrinkage_verbose": bool(pred_cfg.get("slm_adaptive_shrinkage_verbose", False)),
+        "adaptive_shrinkage_inner_n_starts": int(pred_cfg.get("slm_adaptive_shrinkage_inner_n_starts", max(1, min(3, int(n_starts))))),
+        "adaptive_shrinkage_inner_max_iter": int(pred_cfg.get("slm_adaptive_shrinkage_inner_max_iter", max(40, min(int(max_iter), 120)))),
         "shrinkage_alpha_grid": list(
             pred_cfg.get(
                 "slm_shrinkage_alpha_grid",
@@ -1175,6 +1514,7 @@ def main():
         ),
         "adaptive_shrinkage_folds": int(pred_cfg.get("slm_adaptive_shrinkage_folds", 5)),
     }
+
 
 
 
@@ -1190,8 +1530,11 @@ def main():
         f"optimizer={slm_cfg['optimizer']}, "
         f"gtol={slm_cfg['gtol']}, xtol={slm_cfg['xtol']}, barrier_tol={slm_cfg['barrier_tol']}, "
         f"slack={slm_cfg['constraint_slack']}, data_start={slm_cfg['data_start']}, "
-        f"early_stop_patience={slm_cfg['early_stop_patience']}, early_stop_rel_improvement={slm_cfg['early_stop_rel_improvement']}"
+        f"early_stop_patience={slm_cfg['early_stop_patience']}, early_stop_rel_improvement={slm_cfg['early_stop_rel_improvement']}, "
+        f"adaptive_mode={slm_cfg['adaptive_shrinkage_mode']}, adaptive_inner_folds={slm_cfg['adaptive_shrinkage_folds']}, "
+        f"adaptive_inner_starts={slm_cfg['adaptive_shrinkage_inner_n_starts']}, adaptive_inner_max_iter={slm_cfg['adaptive_shrinkage_inner_max_iter']}"
     )
+
 
     print("=" * 60)
 

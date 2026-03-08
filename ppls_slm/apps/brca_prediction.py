@@ -34,23 +34,31 @@ import pandas as pd
 
 from ppls_slm.apps.data_utils import (
     load_brca_combined_raw,
+    select_feature_indices,
     standardize_train_test,
-    top_variance_indices,
     unstandardize_cov,
     unstandardize_y,
 )
 
 
+
 from ppls_slm.algorithms import EMAlgorithm, InitialPointGenerator, ScalarLikelihoodMethod
 from ppls_slm.apps.prediction_baselines import compute_regression_metrics, run_plsr_prediction, run_ridge_prediction
 from ppls_slm.apps.prediction import (
+    _data_driven_theta0,
     compute_credible_intervals,
     empirical_coverage,
+    fit_latent_recalibration_head,
     predict_conditional_covariance,
     predict_conditional_mean,
+    predict_recalibrated_mean,
     select_shrinkage_alpha_cv,
+    select_shrinkage_alpha_nested_cv,
     slm_method_name,
 )
+
+
+
 
 
 
@@ -87,8 +95,11 @@ def _fit_ppls_slm(
 
     init_gen = InitialPointGenerator(p=p, q=q, r=r, n_starts=n_starts, random_seed=seed)
     starting_points = init_gen.generate_starting_points()
+    if starting_points:
+        starting_points[0] = _data_driven_theta0(X_train_s, Y_train_s, r=r)
 
     slm = ScalarLikelihoodMethod(
+
         p=p,
         q=q,
         r=r,
@@ -125,8 +136,11 @@ def _fit_ppls_em(X_train_s, Y_train_s, *, r: int, n_starts: int, seed: int, max_
 
     init_gen = InitialPointGenerator(p=p, q=q, r=r, n_starts=n_starts, random_seed=seed)
     starting_points = init_gen.generate_starting_points()
+    if starting_points:
+        starting_points[0] = _data_driven_theta0(X_train_s, Y_train_s, r=r)
 
     em = EMAlgorithm(p=p, q=q, r=r, max_iter=int(max_iter), tolerance=float(tol))
+
     res = em.fit(X_train_s, Y_train_s, starting_points)
 
     return {
@@ -162,6 +176,8 @@ def run_brca_prediction(
     ridge_cv: Optional[int] = None,
     x_top_k: Optional[int] = None,
     y_top_k: Optional[int] = None,
+    feature_screening_method: str = "variance",
+    feature_screening_mix: float = 0.5,
     slm_optimizer: str = "trust-constr",
     slm_use_noise_preestimation: bool = True,
     slm_gtol: float = 1e-3,
@@ -174,9 +190,20 @@ def run_brca_prediction(
     slm_early_stop_patience: Optional[int] = None,
     slm_early_stop_rel_improvement: Optional[float] = None,
     slm_adaptive_shrinkage: bool = False,
+    slm_adaptive_shrinkage_mode: str = "nested_refit",
+    slm_adaptive_shrinkage_inner_n_starts: Optional[int] = None,
+    slm_adaptive_shrinkage_inner_max_iter: Optional[int] = None,
+    slm_adaptive_shrinkage_verbose: bool = False,
     slm_shrinkage_alpha_grid: Optional[List[float]] = None,
     slm_adaptive_shrinkage_folds: int = 5,
+    slm_latent_recalibration: bool = False,
+    slm_latent_recalibration_cv: Optional[int] = None,
+    slm_latent_recalibration_alphas: Optional[List[float]] = None,
+    slm_latent_recalibration_include_x: bool = False,
 ) -> pd.DataFrame:
+
+
+
 
 
 
@@ -188,9 +215,10 @@ def run_brca_prediction(
     folds = np.array_split(indices, int(n_folds))
 
     slm_method = slm_method_name(slm_optimizer=slm_optimizer, adaptive=slm_adaptive_shrinkage)
-
+    latent_head_alphas = slm_latent_recalibration_alphas or [1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0]
 
     rows: List[Dict] = []
+
 
 
     # Precompute fold splits and (optional) feature indices once per fold,
@@ -202,14 +230,20 @@ def run_brca_prediction(
         X_train0, Y_train0 = X[train_idx], Y[train_idx]
         X_test0, Y_test0 = X[test_idx], Y[test_idx]
 
-        x_idx = top_variance_indices(X_train0, x_top_k)
-        y_idx = top_variance_indices(Y_train0, y_top_k)
-
+        x_idx, y_idx = select_feature_indices(
+            X_train0,
+            Y_train0,
+            x_top_k=x_top_k,
+            y_top_k=y_top_k,
+            method=feature_screening_method,
+            hybrid_mix=feature_screening_mix,
+        )
 
         X_train = X_train0 if x_idx is None else X_train0[:, x_idx]
         X_test = X_test0 if x_idx is None else X_test0[:, x_idx]
         Y_train = Y_train0 if y_idx is None else Y_train0[:, y_idx]
         Y_test = Y_test0 if y_idx is None else Y_test0[:, y_idx]
+
 
         # Standardize once per fold for PPLS-based methods.
         X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = standardize_train_test(X_train, Y_train, X_test, Y_test)
@@ -292,18 +326,95 @@ def run_brca_prediction(
             shrinkage_alpha_slm = 1.0
             if bool(slm_adaptive_shrinkage):
                 grid = slm_shrinkage_alpha_grid or [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0]
-                shrinkage_alpha_slm, _cv = select_shrinkage_alpha_cv(
+                inner_n_starts = int(slm_adaptive_shrinkage_inner_n_starts or max(1, min(2, int(slm_n_starts))))
+                inner_max_iter = int(slm_adaptive_shrinkage_inner_max_iter or max(40, min(int(slm_max_iter), 80)))
+                mode = str(slm_adaptive_shrinkage_mode).strip().lower()
+                if mode in ("nested_refit", "nested", "refit"):
+                    print(
+                        f"[{slm_method}] r={r} fold {fold_idx + 1}/{n_folds} adaptive-shrinkage nested CV (inner_folds={int(slm_adaptive_shrinkage_folds)}, inner_starts={inner_n_starts}, inner_max_iter={inner_max_iter})...",
+                        flush=True,
+                    )
+                    shrinkage_alpha_slm, _cv, _cov_scale = select_shrinkage_alpha_nested_cv(
+                        fd["X_train_s"],
+                        fd["Y_train_s"],
+                        fit_model_fn=lambda X_in, Y_in, inner_seed: _fit_ppls_slm(
+                            X_in,
+                            Y_in,
+                            r=r,
+                            n_starts=inner_n_starts,
+                            seed=int(inner_seed),
+                            max_iter=inner_max_iter,
+                            optimizer=slm_optimizer,
+                            use_noise_preestimation=slm_use_noise_preestimation,
+                            gtol=slm_gtol,
+                            xtol=slm_xtol,
+                            barrier_tol=slm_barrier_tol,
+                            initial_constr_penalty=slm_initial_constr_penalty,
+                            constraint_slack=slm_constraint_slack,
+                            verbose=bool(slm_adaptive_shrinkage_verbose),
+                            progress_every=int(slm_progress_every),
+                            early_stop_patience=slm_early_stop_patience,
+                            early_stop_rel_improvement=slm_early_stop_rel_improvement,
+                        ),
+                        alpha_grid=grid,
+                        n_folds=int(slm_adaptive_shrinkage_folds),
+                        seed=int(seed + fold_idx),
+                        verbose=bool(slm_adaptive_shrinkage_verbose),
+                        progress_label=f"[{slm_method}] r={r} fold {fold_idx + 1}/{n_folds}",
+                        validation_predictor_fn=(
+                            (lambda X_tr_in, Y_tr_in, X_va_in, params_in, a: predict_recalibrated_mean(
+                                X_va_in,
+                                params_in,
+                                fit_latent_recalibration_head(
+                                    X_tr_in,
+                                    Y_tr_in,
+                                    params_in,
+                                    shrinkage_alpha=float(a),
+                                    ridge_alphas=latent_head_alphas,
+                                    cv=slm_latent_recalibration_cv,
+                                    include_original_x=bool(slm_latent_recalibration_include_x),
+                                ),
+
+                                shrinkage_alpha=float(a),
+                            ))
+                            if bool(slm_latent_recalibration)
+                            else None
+                        ),
+                    )
+
+                else:
+                    shrinkage_alpha_slm, _cv = select_shrinkage_alpha_cv(
+                        fd["X_train_s"],
+                        fd["Y_train_s"],
+                        params=slm_params,
+                        alpha_grid=grid,
+                        n_folds=int(slm_adaptive_shrinkage_folds),
+                        seed=int(seed + fold_idx),
+                    )
+
+            if bool(slm_latent_recalibration):
+                slm_head = fit_latent_recalibration_head(
                     fd["X_train_s"],
                     fd["Y_train_s"],
-                    params=slm_params,
-                    alpha_grid=grid,
-                    n_folds=int(slm_adaptive_shrinkage_folds),
-                    seed=int(seed + fold_idx),
+                    slm_params,
+                    shrinkage_alpha=shrinkage_alpha_slm,
+                    ridge_alphas=latent_head_alphas,
+                    cv=slm_latent_recalibration_cv,
+                    include_original_x=bool(slm_latent_recalibration_include_x),
                 )
 
-            y_pred_s, _Cov_s = _predict_ppls(fd["X_test_s"], slm_params, shrinkage_alpha=shrinkage_alpha_slm)
+                y_pred_s = predict_recalibrated_mean(
+                    fd["X_test_s"],
+                    slm_params,
+                    slm_head,
+                    shrinkage_alpha=shrinkage_alpha_slm,
+                )
+            else:
+                y_pred_s, _Cov_s = _predict_ppls(fd["X_test_s"], slm_params, shrinkage_alpha=shrinkage_alpha_slm)
+
             y_pred = unstandardize_y(y_pred_s, fd["sy"])
             m = compute_regression_metrics(fd["Y_test"], y_pred)
+
 
             rows.append(
                 {
@@ -504,8 +615,11 @@ def main():
     if y_top_k is None:
         y_top_k = min(60, int(Y.shape[1]))
 
+    feature_screening_method = str(brca_cfg.get("feature_screening", "hybrid"))
+    feature_screening_mix = float(brca_cfg.get("feature_screening_mix", 0.7))
 
     if args.smoke:
+
         # Minimal settings that should finish quickly and validate the end-to-end pipeline.
         r_grid = r_grid[:1]
         brca_cfg["n_folds"] = min(int(brca_cfg["n_folds"]), 2)
@@ -517,15 +631,36 @@ def main():
         slm_progress_every = 1
         print("[SMOKE] overriding config for a fast debug run", flush=True)
 
+    slm_n_starts = int(brca_cfg.get("slm_n_starts", brca_cfg["n_starts"]))
+    em_n_starts = int(brca_cfg.get("em_n_starts", brca_cfg["n_starts"]))
+    slm_max_iter = int(brca_cfg.get("slm_max_iter", brca_cfg["max_iter"]))
+    em_max_iter = int(brca_cfg.get("em_max_iter", brca_cfg["max_iter"]))
+    slm_adaptive_shrinkage_mode = str(brca_cfg.get("slm_adaptive_shrinkage_mode", "nested_refit"))
+    slm_adaptive_shrinkage_inner_n_starts = int(brca_cfg.get("slm_adaptive_shrinkage_inner_n_starts", max(1, min(2, slm_n_starts))))
+    slm_adaptive_shrinkage_inner_max_iter = int(brca_cfg.get("slm_adaptive_shrinkage_inner_max_iter", max(40, min(slm_max_iter, 80))))
+    slm_adaptive_shrinkage_verbose = bool(brca_cfg.get("slm_adaptive_shrinkage_verbose", False))
+    slm_latent_recalibration = bool(brca_cfg.get("slm_latent_recalibration", False))
+    slm_latent_recalibration_cv_raw = brca_cfg.get("slm_latent_recalibration_cv", None)
+    slm_latent_recalibration_cv = None if slm_latent_recalibration_cv_raw in (None, "none", "None", "null") else int(slm_latent_recalibration_cv_raw)
+    slm_latent_recalibration_alphas = brca_cfg.get("slm_latent_recalibration_alphas", None)
+    slm_latent_recalibration_include_x = bool(brca_cfg.get("slm_latent_recalibration_include_x", False))
+
     print(
+
+
         "Config (prediction_brca): "
-        f"n_folds={int(brca_cfg['n_folds'])}, r_grid={r_grid}, n_starts={int(brca_cfg['n_starts'])}, max_iter={int(brca_cfg['max_iter'])}, "
-        f"ridge_cv={ridge_cv}, x_top_k={x_top_k}, y_top_k={y_top_k}, "
+        f"n_folds={int(brca_cfg['n_folds'])}, r_grid={r_grid}, slm_n_starts={slm_n_starts}, em_n_starts={em_n_starts}, slm_max_iter={slm_max_iter}, em_max_iter={em_max_iter}, "
+        f"ridge_cv={ridge_cv}, x_top_k={x_top_k}, y_top_k={y_top_k}, feature_screening={feature_screening_method}, feature_screening_mix={feature_screening_mix}, "
         f"slm_optimizer={slm_optimizer}, slm_gtol={slm_gtol}, slm_xtol={slm_xtol}, slm_barrier_tol={slm_barrier_tol}, slm_constraint_slack={slm_constraint_slack}, "
         f"slm_verbose={slm_verbose}, slm_progress_every={slm_progress_every}, "
-        f"slm_early_stop_patience={slm_early_stop_patience}, slm_early_stop_rel_improvement={slm_early_stop_rel_improvement}",
+        f"slm_early_stop_patience={slm_early_stop_patience}, slm_early_stop_rel_improvement={slm_early_stop_rel_improvement}, "
+        f"adaptive_mode={slm_adaptive_shrinkage_mode}, adaptive_inner_starts={slm_adaptive_shrinkage_inner_n_starts}, adaptive_inner_max_iter={slm_adaptive_shrinkage_inner_max_iter}, "
+        f"latent_recalibration={slm_latent_recalibration}, latent_recalibration_cv={slm_latent_recalibration_cv}, latent_recalibration_include_x={slm_latent_recalibration_include_x}",
         flush=True,
     )
+
+
+
 
 
     df = run_brca_prediction(
@@ -534,14 +669,17 @@ def main():
         r_grid=r_grid,
         n_folds=int(brca_cfg["n_folds"]),
         seed=int(brca_cfg["seed"]),
-        slm_n_starts=int(brca_cfg["n_starts"]),
-        slm_max_iter=int(brca_cfg["max_iter"]),
-        em_n_starts=int(brca_cfg["n_starts"]),
-        em_max_iter=int(brca_cfg["max_iter"]),
+        slm_n_starts=slm_n_starts,
+        slm_max_iter=slm_max_iter,
+        em_n_starts=em_n_starts,
+        em_max_iter=em_max_iter,
         em_tol=float(brca_cfg["em_tol"]),
+
         ridge_cv=ridge_cv,
         x_top_k=x_top_k,
         y_top_k=y_top_k,
+        feature_screening_method=feature_screening_method,
+        feature_screening_mix=feature_screening_mix,
         slm_optimizer=slm_optimizer,
         slm_use_noise_preestimation=slm_use_noise_preestimation,
         slm_gtol=slm_gtol,
@@ -554,9 +692,20 @@ def main():
         slm_early_stop_patience=slm_early_stop_patience,
         slm_early_stop_rel_improvement=slm_early_stop_rel_improvement,
         slm_adaptive_shrinkage=bool(brca_cfg.get("slm_adaptive_shrinkage", False)),
+        slm_adaptive_shrinkage_mode=slm_adaptive_shrinkage_mode,
+        slm_adaptive_shrinkage_inner_n_starts=slm_adaptive_shrinkage_inner_n_starts,
+        slm_adaptive_shrinkage_inner_max_iter=slm_adaptive_shrinkage_inner_max_iter,
+        slm_adaptive_shrinkage_verbose=slm_adaptive_shrinkage_verbose,
         slm_shrinkage_alpha_grid=brca_cfg.get("slm_shrinkage_alpha_grid", None),
         slm_adaptive_shrinkage_folds=int(brca_cfg.get("slm_adaptive_shrinkage_folds", 5)),
+        slm_latent_recalibration=slm_latent_recalibration,
+        slm_latent_recalibration_cv=slm_latent_recalibration_cv,
+        slm_latent_recalibration_alphas=slm_latent_recalibration_alphas,
+        slm_latent_recalibration_include_x=slm_latent_recalibration_include_x,
     )
+
+
+
 
 
 

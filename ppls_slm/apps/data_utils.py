@@ -4,8 +4,9 @@ These helpers are intentionally lightweight and keep behaviour stable across app
 - fold-wise standardisation (fit on train, apply to test)
 - inverse-transform helpers for predictions/covariances
 - BRCA combined dataset loader (bundled CSV(.zip) format)
-- deterministic top-variance feature selection
+- deterministic feature screening on the training split only
 """
+
 
 from __future__ import annotations
 
@@ -108,6 +109,61 @@ def unstandardize_cov(Cov_s: np.ndarray, scaler_y) -> np.ndarray:
     return D @ Cov_s @ D
 
 
+def _top_k_indices_from_scores(scores: np.ndarray, k: Optional[int]) -> Optional[np.ndarray]:
+    if k is None:
+        return None
+    k = int(k)
+    if k <= 0 or k >= int(scores.shape[0]):
+        return None
+
+    scores = np.asarray(scores, dtype=float)
+    scores = np.nan_to_num(scores, nan=-np.inf, posinf=-np.inf, neginf=-np.inf)
+    idx_desc = np.argsort(-scores, kind="mergesort")
+    return np.sort(idx_desc[:k])
+
+
+def _cross_view_screen_scores(X: np.ndarray, Y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return cross-view relevance scores for X and Y features.
+
+    The score is the RMS empirical cross-correlation with the opposite view,
+    computed on the training split only after z-scoring each feature.
+    """
+
+    Xc = np.asarray(X, dtype=float)
+    Yc = np.asarray(Y, dtype=float)
+    if Xc.ndim != 2 or Yc.ndim != 2:
+        raise ValueError("X and Y must be 2D arrays")
+    if Xc.shape[0] != Yc.shape[0]:
+        raise ValueError("X and Y must have the same number of rows")
+
+    Xc = Xc - np.mean(Xc, axis=0, keepdims=True)
+    Yc = Yc - np.mean(Yc, axis=0, keepdims=True)
+
+    sx = np.std(Xc, axis=0, ddof=0)
+    sy = np.std(Yc, axis=0, ddof=0)
+    sx_safe = np.where(sx > 1e-12, sx, 1.0)
+    sy_safe = np.where(sy > 1e-12, sy, 1.0)
+
+    Xs = Xc / sx_safe[np.newaxis, :]
+    Ys = Yc / sy_safe[np.newaxis, :]
+
+    denom = float(max(1, Xs.shape[0] - 1))
+    cross_corr = (Xs.T @ Ys) / denom
+
+    x_scores = np.sqrt(np.mean(cross_corr**2, axis=1))
+    y_scores = np.sqrt(np.mean(cross_corr**2, axis=0))
+    return x_scores, y_scores
+
+
+def _standardize_scores(scores: np.ndarray) -> np.ndarray:
+    scores = np.asarray(scores, dtype=float)
+    mu = float(np.mean(scores))
+    sd = float(np.std(scores, ddof=0))
+    if not np.isfinite(sd) or sd <= 1e-12:
+        return np.zeros_like(scores, dtype=float)
+    return (scores - mu) / sd
+
+
 def top_variance_indices(M: np.ndarray, k: Optional[int]) -> Optional[np.ndarray]:
     """Select top-k columns by variance.
 
@@ -116,13 +172,64 @@ def top_variance_indices(M: np.ndarray, k: Optional[int]) -> Optional[np.ndarray
     Determinism: uses stable sorting and returns indices in ascending order.
     """
 
-    if k is None:
-        return None
-    k = int(k)
-    if k <= 0 or k >= M.shape[1]:
-        return None
-
     v = np.var(np.asarray(M, dtype=float), axis=0)
-    idx_desc = np.argsort(-v, kind="mergesort")
-    idx = np.sort(idx_desc[:k])
-    return idx
+    return _top_k_indices_from_scores(v, k)
+
+
+def top_cross_covariance_indices(M_self: np.ndarray, M_other: np.ndarray, k: Optional[int], *, target: str) -> Optional[np.ndarray]:
+    """Select top-k features by cross-view relevance.
+
+    Parameters
+    ----------
+    target:
+        Either ``"x"`` or ``"y"`` to indicate which view should be ranked.
+    """
+
+    x_scores, y_scores = _cross_view_screen_scores(M_self, M_other)
+    tgt = str(target).strip().lower()
+    if tgt == "x":
+        return _top_k_indices_from_scores(x_scores, k)
+    if tgt == "y":
+        return _top_k_indices_from_scores(y_scores, k)
+    raise ValueError(f"target must be 'x' or 'y', got {target!r}")
+
+
+def select_feature_indices(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    *,
+    x_top_k: Optional[int],
+    y_top_k: Optional[int],
+    method: str = "variance",
+    hybrid_mix: float = 0.5,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Select BRCA features using a train-fold-only screening rule.
+
+    Supported methods
+    -----------------
+    ``variance``:
+        Keep the original unsupervised top-variance screen.
+    ``cross_covariance`` / ``supervised``:
+        Rank each feature by its RMS empirical cross-correlation with the opposite view.
+    ``hybrid``:
+        Weighted combination of standardized variance and cross-view scores.
+    """
+
+    method_key = str(method).strip().lower().replace("-", "_").replace(" ", "_")
+    if method_key in ("variance", "var"):
+        return top_variance_indices(X_train, x_top_k), top_variance_indices(Y_train, y_top_k)
+
+    x_cross, y_cross = _cross_view_screen_scores(X_train, Y_train)
+    if method_key in ("cross_covariance", "crosscovariance", "crosscov", "supervised"):
+        return _top_k_indices_from_scores(x_cross, x_top_k), _top_k_indices_from_scores(y_cross, y_top_k)
+
+    if method_key == "hybrid":
+        mix = float(np.clip(hybrid_mix, 0.0, 1.0))
+        x_var = np.var(np.asarray(X_train, dtype=float), axis=0)
+        y_var = np.var(np.asarray(Y_train, dtype=float), axis=0)
+        x_score = (1.0 - mix) * _standardize_scores(x_var) + mix * _standardize_scores(x_cross)
+        y_score = (1.0 - mix) * _standardize_scores(y_var) + mix * _standardize_scores(y_cross)
+        return _top_k_indices_from_scores(x_score, x_top_k), _top_k_indices_from_scores(y_score, y_top_k)
+
+    raise ValueError(f"Unsupported feature screening method: {method}")
+
