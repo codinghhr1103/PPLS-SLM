@@ -225,6 +225,116 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
     out_path.write_text("\n".join(tex), encoding="utf-8")
 
 
+def generate_parameter_recovery_scale_table(*, artifacts_dir: Path, out_path: Path, noise: str) -> None:
+    path = artifacts_dir / "simulation_scale" / "parameter_recovery_scale_summary.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"missing: {path}")
+
+    df = pd.read_csv(path)
+    df = df[df["noise"].astype(str).str.lower() == str(noise).lower()].copy()
+    if df.empty:
+        raise ValueError(f"No rows found for noise='{noise}' in {path}")
+
+    method_order = ["SLM-Fixed", "SLM-Oracle", "EM", "ECM"]
+    metric_cols = [
+        ("mse_W_table_str_x1e2", r"$\text{MSE}_W$"),
+        ("mse_C_table_str_x1e2", r"$\text{MSE}_C$"),
+        ("mse_B_table_str_x1e2", r"$\text{MSE}_B$"),
+        ("mse_Sigma_t_table_str_x1e2", r"$\text{MSE}_{\Sigma_t}$"),
+        ("mse_sigma_h2_table_str_x1e2", r"$\text{MSE}_{\sigma_h^2}$"),
+    ]
+    m_trials = int(df["n_trials"].iloc[0])
+    noise_params = {"low": "(0.1, 0.1, 0.05)", "high": "(0.5, 0.5, 0.25)"}
+    noise_title = "low" if str(noise).lower() == "low" else "high"
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{2pt}")
+    tex.append(r"\renewcommand{\arraystretch}{1.05}")
+    tex.append(r"\begin{table}[t]\scriptsize")
+    tex.append(r"\centering")
+    tex.append(
+        rf"\caption{{Large-scale parameter recovery ({noise_title} noise $({noise_params[noise_title]})$): $\text{{MSE}}\times 10^2$ (mean $\pm$ std over $M={m_trials}$ trials).}}"
+    )
+    tex.append(rf"\label{{tab:parameter_recovery_scale_{noise_title}}}")
+    tex.append(r"\begin{tabular}{ccccccccc}")
+    tex.append(r"\toprule")
+    tex.append(r"Cfg & $(p,q,r)$ & $N$ & Method & $\text{MSE}_W$ & $\text{MSE}_C$ & $\text{MSE}_B$ & $\text{MSE}_{\Sigma_t}$ & $\text{MSE}_{\sigma_h^2}$ \\")
+    tex.append(r"\midrule")
+
+    for config_id in sorted(df["config_id"].astype(int).unique()):
+        cfg = df[df["config_id"].astype(int) == int(config_id)].copy()
+        cfg = cfg.set_index("method_display")
+        first_row = True
+        p = int(cfg["p"].iloc[0])
+        q = int(cfg["q"].iloc[0])
+        r = int(cfg["r"].iloc[0])
+        n_samples = int(cfg["n_samples"].iloc[0])
+        for method in method_order:
+            row = cfg.loc[method]
+            cfg_cell = f"C{config_id}" if first_row else ""
+            dim_cell = rf"$({p},{q},{r})$" if first_row else ""
+            n_cell = str(n_samples) if first_row else ""
+            metric_cells = [_pm_makecell(str(row[col])) for col, _ in metric_cols]
+            tex.append(
+                f"{cfg_cell} & {dim_cell} & {n_cell} & {method} & " + " & ".join(metric_cells) + r" \\"
+            )
+            first_row = False
+        if int(config_id) != int(sorted(df["config_id"].astype(int).unique())[-1]):
+            tex.append(r"\midrule")
+
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}")
+    tex.append(r"\end{table}")
+    tex.append("")
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
+def generate_parameter_recovery_scale_runtime_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    summary_path = artifacts_dir / "simulation_scale" / "parameter_recovery_scale_summary.csv"
+    runtime_path = artifacts_dir / "simulation_scale" / "parameter_recovery_scale_runtime.csv"
+    manifest_path = artifacts_dir / "simulation_scale" / "run_manifest.json"
+    if not (summary_path.exists() and runtime_path.exists() and manifest_path.exists()):
+        raise FileNotFoundError(f"missing: {summary_path}, {runtime_path}, or {manifest_path}")
+
+    summary_df = pd.read_csv(summary_path)
+    runtime_df = pd.read_csv(runtime_path)
+    manifest = _read_json(manifest_path)
+
+    runtime_pivot = runtime_df.pivot(index="config_id", columns="noise", values="condition_runtime_min")
+    method_pivot = summary_df.groupby(["config_id", "method_display"])["avg_runtime_sec"].mean().unstack()
+
+    total_minutes = float(manifest.get("elapsed_sec", 0.0)) / 60.0
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{3pt}")
+    tex.append(r"\begin{table}[t]\scriptsize")
+    tex.append(r"\centering")
+    tex.append(
+        rf"\caption{{Wall-clock summary for the large-scale parameter recovery study. The full run took {total_minutes:.1f} minutes on the reported hardware; method columns show average per-trial runtime (seconds).}}"
+    )
+    tex.append(r"\label{tab:parameter_recovery_scale_runtime}")
+    tex.append(r"\begin{tabular}{cccccccc}")
+    tex.append(r"\toprule")
+    tex.append(r"Cfg & $N$ & Low min & High min & SLM-Fixed & SLM-Oracle & EM & ECM \\")
+    tex.append(r"\midrule")
+
+    for config_id in sorted(runtime_pivot.index.astype(int).tolist()):
+        cfg_rows = summary_df[summary_df["config_id"].astype(int) == int(config_id)]
+        n_samples = int(cfg_rows["n_samples"].iloc[0])
+        low_min = float(runtime_pivot.loc[config_id, "low"])
+        high_min = float(runtime_pivot.loc[config_id, "high"])
+        method_means = method_pivot.loc[config_id]
+        tex.append(
+            f"C{config_id} & {n_samples} & {low_min:.2f} & {high_min:.2f} & {float(method_means['SLM-Fixed']):.2f} & {float(method_means['SLM-Oracle']):.2f} & {float(method_means['EM']):.2f} & {float(method_means['ECM']):.2f} \\\\\\\\" 
+        )
+
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}")
+    tex.append(r"\end{table}")
+    tex.append("")
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
 def generate_top10_pairs_table(*, artifacts_dir: Path, out_path: Path) -> None:
     path = artifacts_dir / "association" / "top10_pairs_slm.csv"
     df = pd.read_csv(path)
@@ -1164,6 +1274,26 @@ def main() -> None:
 
     generate_convergence_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_algorithm_convergence.tex")
     generate_parameter_mse_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_parameter_mse.tex")
+
+    scale_dir = artifacts_dir / "simulation_scale"
+    if (scale_dir / "parameter_recovery_scale_summary.csv").exists():
+        generate_parameter_recovery_scale_table(
+            artifacts_dir=artifacts_dir,
+            out_path=out_dir / "tab_parameter_recovery_scale_low.tex",
+            noise="low",
+        )
+        generate_parameter_recovery_scale_table(
+            artifacts_dir=artifacts_dir,
+            out_path=out_dir / "tab_parameter_recovery_scale_high.tex",
+            noise="high",
+        )
+        generate_parameter_recovery_scale_runtime_table(
+            artifacts_dir=artifacts_dir,
+            out_path=out_dir / "tab_parameter_recovery_scale_runtime.tex",
+        )
+    else:
+        print(f"[SKIP] Large-scale parameter recovery tables (missing: {scale_dir / 'parameter_recovery_scale_summary.csv'})")
+
     generate_top10_pairs_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_top10_pairs.tex")
     generate_detection_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_detected_pairs.tex")
 

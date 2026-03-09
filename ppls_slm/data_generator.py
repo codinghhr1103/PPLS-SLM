@@ -351,3 +351,139 @@ class SineDataGenerator:
             C_orth = C / np.linalg.norm(C, axis=0, keepdims=True)
             
         return W_orth, C_orth
+
+
+class RandomOrthogonalDataGenerator:
+    """Generate high-dimensional PPLS data with random orthogonal loadings."""
+
+    def __init__(
+        self,
+        p: int,
+        q: int,
+        r: int,
+        n_samples: int,
+        random_seed: int = 42,
+        output_dir: str = "./data",
+    ):
+        self.p = int(p)
+        self.q = int(q)
+        self.r = int(r)
+        self.n_samples = int(n_samples)
+        self.random_seed = int(random_seed)
+        self.output_dir = output_dir
+        self.model = PPLSModel(self.p, self.q, self.r)
+        os.makedirs(output_dir, exist_ok=True)
+
+    @staticmethod
+    def _random_orthonormal_matrix(n_rows: int, n_cols: int, rng: np.random.RandomState) -> np.ndarray:
+        mat = rng.randn(n_rows, n_cols)
+        q_mat, r_mat = np.linalg.qr(mat)
+        diag = np.sign(np.diag(r_mat))
+        diag[diag == 0] = 1.0
+        return q_mat[:, :n_cols] * diag[:n_cols]
+
+    @staticmethod
+    def _default_theta_t2_values(r: int) -> np.ndarray:
+        return 0.5 * np.linspace(float(r), 1.0, int(r))
+
+    @staticmethod
+    def _default_b_values(r: int) -> np.ndarray:
+        return np.linspace(2.0, 0.5, int(r))
+
+    def generate_true_parameters(
+        self,
+        sigma_e2: float = 0.1,
+        sigma_f2: float = 0.1,
+        sigma_h2: float = 0.05,
+        theta_t2_values: Optional[np.ndarray] = None,
+        b_values: Optional[np.ndarray] = None,
+    ) -> Dict:
+        rng = np.random.RandomState(self.random_seed)
+
+        W = self._random_orthonormal_matrix(self.p, self.r, rng)
+        C = self._random_orthonormal_matrix(self.q, self.r, rng)
+
+        theta_t2_values = np.asarray(
+            theta_t2_values if theta_t2_values is not None else self._default_theta_t2_values(self.r),
+            dtype=float,
+        )
+        b_values = np.asarray(
+            b_values if b_values is not None else self._default_b_values(self.r),
+            dtype=float,
+        )
+
+        if theta_t2_values.shape != (self.r,):
+            raise ValueError(f"theta_t2_values must have shape ({self.r},), got {theta_t2_values.shape}")
+        if b_values.shape != (self.r,):
+            raise ValueError(f"b_values must have shape ({self.r},), got {b_values.shape}")
+        if np.any(theta_t2_values <= 0) or np.any(b_values <= 0):
+            raise ValueError("theta_t2_values and b_values must be strictly positive")
+
+        products = theta_t2_values * b_values
+        if not np.all(products[:-1] > products[1:]):
+            raise ValueError("Identifiability constraint violated: theta_t2_values * b_values must be strictly decreasing")
+
+        return {
+            'W': W,
+            'C': C,
+            'B': np.diag(b_values),
+            'Sigma_t': np.diag(theta_t2_values),
+            'sigma_e2': float(sigma_e2),
+            'sigma_f2': float(sigma_f2),
+            'sigma_h2': float(sigma_h2),
+            'p': self.p,
+            'q': self.q,
+            'r': self.r,
+            'n_samples': self.n_samples,
+            'generator': 'random_orthogonal',
+            'random_seed': self.random_seed,
+            'identifiability_products': products,
+        }
+
+    def generate_samples(self, params: Dict, seed: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+        rng = np.random.RandomState(self.random_seed if seed is None else int(seed))
+        theta_t = np.sqrt(np.diag(params['Sigma_t']))
+        T = rng.randn(self.n_samples, self.r) @ np.diag(theta_t)
+        H = np.sqrt(float(params['sigma_h2'])) * rng.randn(self.n_samples, self.r)
+        U = T @ params['B'] + H
+        E = np.sqrt(float(params['sigma_e2'])) * rng.randn(self.n_samples, self.p)
+        F = np.sqrt(float(params['sigma_f2'])) * rng.randn(self.n_samples, self.q)
+        X = T @ params['W'].T + E
+        Y = U @ params['C'].T + F
+        return X, Y
+
+    def save_true_parameters(self, params: Dict):
+        with open(os.path.join(self.output_dir, 'ground_truth.pkl'), 'wb') as f:
+            pickle.dump(params, f)
+
+        np.save(os.path.join(self.output_dir, 'ground_truth_W.npy'), params['W'])
+        np.save(os.path.join(self.output_dir, 'ground_truth_C.npy'), params['C'])
+        np.save(os.path.join(self.output_dir, 'ground_truth_B.npy'), params['B'])
+        np.save(os.path.join(self.output_dir, 'ground_truth_Sigma_t.npy'), params['Sigma_t'])
+
+        params_serializable = {}
+        for key, value in params.items():
+            if isinstance(value, np.ndarray):
+                params_serializable[key] = value.tolist()
+            else:
+                params_serializable[key] = value
+
+        with open(os.path.join(self.output_dir, 'ground_truth_parameters.json'), 'w') as f:
+            json.dump(params_serializable, f, indent=4)
+
+        summary = {
+            'W_shape': list(params['W'].shape),
+            'C_shape': list(params['C'].shape),
+            'B_diagonal': np.diag(params['B']).tolist(),
+            'Sigma_t_diagonal': np.diag(params['Sigma_t']).tolist(),
+            'sigma_e2': float(params['sigma_e2']),
+            'sigma_f2': float(params['sigma_f2']),
+            'sigma_h2': float(params['sigma_h2']),
+            'identifiability_products': (np.diag(params['Sigma_t']) * np.diag(params['B'])).tolist(),
+            'random_seed': int(self.random_seed),
+            'n_samples': int(self.n_samples),
+            'generator': 'random_orthogonal',
+        }
+
+        with open(os.path.join(self.output_dir, 'ground_truth_summary.json'), 'w') as f:
+            json.dump(summary, f, indent=4)

@@ -68,6 +68,13 @@ def main() -> int:
     copied += copy_glob(out / "figures", "*.png", sim_dir / "figures")
     copied += copy_glob(out / "figures", "*.xlsx", sim_dir / "figures")
 
+    # --- Large-scale parameter recovery ---
+    scale_out = out / "parameter_recovery_scale" / "full"
+    scale_dir = artifacts / "simulation_scale"
+    copied += int(copy_file(scale_out / "parameter_recovery_scale_summary.csv", scale_dir / "parameter_recovery_scale_summary.csv"))
+    copied += int(copy_file(scale_out / "parameter_recovery_scale_runtime.csv", scale_dir / "parameter_recovery_scale_runtime.csv"))
+    copied += int(copy_file(scale_out / "run_manifest.json", scale_dir / "run_manifest.json"))
+
     # --- Speed experiment ---
     # Some workflows keep the figure under paper/ for LaTeX compilation.
     speed_src_candidates = [

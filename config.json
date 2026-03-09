@@ -85,6 +85,79 @@
       "brca_calibration": true,
       "sync_artifacts": true
     },
+    "parameter_recovery_scale": {
+      "output_dir": "output/parameter_recovery_scale",
+      "seed": 42,
+      "optimizer": "manifold",
+      "n_trials": 10,
+      "smoke_trials": 2,
+      "n_starts": 8,
+      "max_iter": 2000,
+      "em_tolerance": 0.005,
+      "ecm_tolerance": 0.005,
+      "parallel_trials": true,
+      "n_jobs": 4,
+      "slm_gtol": 0.005,
+      "slm_xtol": 0.005,
+      "slm_barrier_tol": 0.005,
+      "slm_constraint_slack": 0.005,
+      "noise_levels": {
+        "low": {
+          "sigma_e2": 0.1,
+          "sigma_f2": 0.1,
+          "sigma_h2": 0.05
+        },
+        "high": {
+          "sigma_e2": 0.5,
+          "sigma_f2": 0.5,
+          "sigma_h2": 0.25
+        }
+      },
+      "dimension_grid": [
+        {
+          "name": "config_01_p50_q50_r5",
+          "p": 50,
+          "q": 50,
+          "r": 5,
+          "n_samples": 500
+        },
+        {
+          "name": "config_02_p100_q100_r5",
+          "p": 100,
+          "q": 100,
+          "r": 5,
+          "n_samples": 600
+        },
+        {
+          "name": "config_03_p100_q100_r10",
+          "p": 100,
+          "q": 100,
+          "r": 10,
+          "n_samples": 600
+        },
+        {
+          "name": "config_04_p200_q200_r5",
+          "p": 200,
+          "q": 200,
+          "r": 5,
+          "n_samples": 1200
+        },
+        {
+          "name": "config_05_p200_q200_r10",
+          "p": 200,
+          "q": 200,
+          "r": 10,
+          "n_samples": 1200
+        },
+        {
+          "name": "config_06_p200_q100_r5",
+          "p": 200,
+          "q": 100,
+          "r": 5,
+          "n_samples": 900
+        }
+      ]
+    },
     "association": {
       "brca_data": "application/brca_data_w_subtypes.csv.zip",
       "output_dir": "results_association"
