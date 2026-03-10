@@ -289,6 +289,11 @@ def empirical_coverage(y_true: np.ndarray, lower: np.ndarray, upper: np.ndarray)
 
 
 def _slm_method_name_from_cfg(slm_cfg: Dict) -> str:
+    """Map SLM config to a human-readable method label.
+
+    NOTE: 等价于仿真实验中的 "SLM-Manifold" + finite-sample augmentations.
+    """
+
     opt = str(slm_cfg.get("optimizer", "")).lower()
     adaptive = bool(slm_cfg.get("adaptive_shrinkage", False))
 
@@ -296,6 +301,7 @@ def _slm_method_name_from_cfg(slm_cfg: Dict) -> str:
         return "PPLS-SLM-Manifold-Adaptive" if adaptive else "PPLS-SLM-Manifold"
 
     return "PPLS-SLM-Adaptive" if adaptive else "PPLS-SLM"
+
 
 
 def slm_method_name(*, slm_optimizer: str, adaptive: bool) -> str:

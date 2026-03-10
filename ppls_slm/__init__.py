@@ -6,4 +6,6 @@ Top-level scripts keep thin wrappers for backward compatibility.
 """
 
 from .bcd_slm import BCDScalarLikelihoodMethod
+from .method_registry import METHOD_REGISTRY, display_name
+
 

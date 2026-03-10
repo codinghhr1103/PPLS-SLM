@@ -114,51 +114,30 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
         save_intermediate = bool(ctx.get("save_intermediate", True))
 
         # Instantiate algorithms inside the process.
-        slm_fixed = ScalarLikelihoodMethod(
+        slm_cfg = config.get("algorithms", {}).get("slm_manifold", {})
+        slm_manifold = ScalarLikelihoodMethod(
             p=p,
             q=q,
             r=r,
-            optimizer=config["algorithms"]["slm"]["optimizer"],
-            max_iter=config["algorithms"]["slm"]["max_iter"],
-            use_noise_preestimation=config["algorithms"]["slm"]["use_noise_preestimation"],
-            gtol=config["algorithms"]["slm"].get("gtol", 1e-3),
-            xtol=config["algorithms"]["slm"].get("xtol", 1e-3),
-            barrier_tol=config["algorithms"]["slm"].get("barrier_tol", 1e-3),
-            constraint_slack=config["algorithms"]["slm"].get("constraint_slack", 1e-2),
+            optimizer=str(slm_cfg.get("optimizer", "manifold")),
+            max_iter=int(slm_cfg.get("max_iter", 2000)),
+            use_noise_preestimation=bool(slm_cfg.get("use_noise_preestimation", True)),
         )
 
-        # Optional SLM-Manifold variant (exact Stiefel constraints via Riemannian optimization).
-        slm_manifold_cfg = config.get("algorithms", {}).get("slm_manifold", None)
-        slm_manifold = None
-        if isinstance(slm_manifold_cfg, dict) and slm_manifold_cfg:
-            slm_manifold = ScalarLikelihoodMethod(
-                p=p,
-                q=q,
-                r=r,
-                optimizer=str(slm_manifold_cfg.get("optimizer", "manifold")),
-                max_iter=int(slm_manifold_cfg.get("max_iter", config["algorithms"]["slm"]["max_iter"])),
-                use_noise_preestimation=bool(slm_manifold_cfg.get("use_noise_preestimation", True)),
-                gtol=float(slm_manifold_cfg.get("gtol", config["algorithms"]["slm"].get("gtol", 1e-3))),
-                xtol=float(slm_manifold_cfg.get("xtol", config["algorithms"]["slm"].get("xtol", 1e-3))),
-                barrier_tol=float(slm_manifold_cfg.get("barrier_tol", config["algorithms"]["slm"].get("barrier_tol", 1e-3))),
-                constraint_slack=float(slm_manifold_cfg.get("constraint_slack", config["algorithms"]["slm"].get("constraint_slack", 1e-2))),
-            )
 
-        # Joint-noise variant: include (sigma_e^2, sigma_f^2) in the optimisation vector.
-
-        slm_joint_cfg = config.get("algorithms", {}).get("slm_joint", {})
-        slm_joint = ScalarLikelihoodMethod(
+        slm_interior_cfg = config.get("algorithms", {}).get("slm_interior", {})
+        slm_interior = ScalarLikelihoodMethod(
             p=p,
             q=q,
             r=r,
-            optimizer=str(slm_joint_cfg.get("optimizer", config["algorithms"]["slm"]["optimizer"])),
-            max_iter=int(slm_joint_cfg.get("max_iter", config["algorithms"]["slm"]["max_iter"])),
-            use_noise_preestimation=bool(slm_joint_cfg.get("use_noise_preestimation", True)),
-            optimize_noise_variances=True,
-            gtol=float(slm_joint_cfg.get("gtol", config["algorithms"]["slm"].get("gtol", 1e-3))),
-            xtol=float(slm_joint_cfg.get("xtol", config["algorithms"]["slm"].get("xtol", 1e-3))),
-            barrier_tol=float(slm_joint_cfg.get("barrier_tol", config["algorithms"]["slm"].get("barrier_tol", 1e-3))),
-            constraint_slack=float(slm_joint_cfg.get("constraint_slack", config["algorithms"]["slm"].get("constraint_slack", 1e-2))),
+            optimizer="trust-constr",
+            max_iter=int(slm_interior_cfg.get("max_iter", 2000)),
+            use_noise_preestimation=bool(slm_interior_cfg.get("use_noise_preestimation", True)),
+            gtol=float(slm_interior_cfg.get("gtol", 0.005)),
+            xtol=float(slm_interior_cfg.get("xtol", 0.005)),
+            barrier_tol=float(slm_interior_cfg.get("barrier_tol", 0.005)),
+            constraint_slack=float(slm_interior_cfg.get("constraint_slack", 0.005)),
+            initial_constr_penalty=float(slm_interior_cfg.get("initial_constr_penalty", 1.0)),
         )
 
         # Oracle-noise variant: skip closed-form noise pre-estimation and use true (sigma_e^2, sigma_f^2).
@@ -166,16 +145,13 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
             p=p,
             q=q,
             r=r,
-            optimizer=config["algorithms"]["slm"]["optimizer"],
-            max_iter=config["algorithms"]["slm"]["max_iter"],
+            optimizer=str(slm_cfg.get("optimizer", "manifold")),
+            max_iter=int(slm_cfg.get("max_iter", 2000)),
             use_noise_preestimation=False,
             fixed_sigma_e2=float(true_params.get("sigma_e2")),
             fixed_sigma_f2=float(true_params.get("sigma_f2")),
-            gtol=config["algorithms"]["slm"].get("gtol", 1e-3),
-            xtol=config["algorithms"]["slm"].get("xtol", 1e-3),
-            barrier_tol=config["algorithms"]["slm"].get("barrier_tol", 1e-3),
-            constraint_slack=config["algorithms"]["slm"].get("constraint_slack", 1e-2),
         )
+
 
         # BCD-SLM (paper Algorithm 1): block-coordinate descent with closed-form diagonal updates.
         bcd_cfg = config.get("algorithms", {}).get("bcd_slm", {})
@@ -194,7 +170,6 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
         )
 
         em = EMAlgorithm(
-
             p=p,
             q=q,
             r=r,
@@ -209,124 +184,89 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
             tolerance=config["algorithms"]["ecm"]["tolerance"],
         )
 
+        def _fallback_estimate() -> Dict[str, Any]:
+            return {
+                "W": np.zeros((p, r)),
+                "C": np.zeros((q, r)),
+                "B": np.eye(r),
+                "Sigma_t": np.eye(r),
+                "sigma_e2": 0.0,
+                "sigma_f2": 0.0,
+                "sigma_h2": 0.0,
+                "objective_value": float("inf"),
+                "n_iterations": 0,
+                "success": False,
+            }
 
         # Run algorithms and collect timing.
-        slm_start_time = time.time()
-        slm_fixed_results = slm_fixed.fit(X, Y, starting_points)
-        slm_time = time.time() - slm_start_time
-
-        slm_manifold_results = None
-        slm_manifold_time = None
-        if slm_manifold is not None:
-            t_man = time.time()
+        slm_manifold_start_time = time.time()
+        try:
             slm_manifold_results = slm_manifold.fit(X, Y, starting_points)
-            slm_manifold_time = time.time() - t_man
-
-        # Warm-start joint optimisation from the fixed-noise solution (feasible W/C).
-
-        theta0_warm = np.concatenate([
-            slm_fixed_results["W"].flatten(),
-            slm_fixed_results["C"].flatten(),
-            np.diag(slm_fixed_results["Sigma_t"]),
-            np.diag(slm_fixed_results["B"]),
-            [
-                float(slm_fixed_results["sigma_h2"]),
-                float(slm_fixed_results["sigma_e2"]),
-                float(slm_fixed_results["sigma_f2"]),
-            ],
-        ])
-        starting_points_joint = [theta0_warm] + list(starting_points)
-
-        slm_joint_start_time = time.time()
-        slm_joint_results = slm_joint.fit(X, Y, starting_points_joint)
-        slm_joint_time = time.time() - slm_joint_start_time
-
-        slm_oracle_start_time = time.time()
-        slm_oracle_results = slm_oracle.fit(X, Y, starting_points)
-        slm_oracle_time = time.time() - slm_oracle_start_time
+        except Exception as e:
+            warnings.warn(f"SLM-Manifold failed: {e}")
+            slm_manifold_results = _fallback_estimate()
+        slm_manifold_time = time.time() - slm_manifold_start_time
 
         bcd_start_time = time.time()
-        bcd_slm_results = bcd_slm.fit(X, Y, starting_points)
+        try:
+            bcd_slm_results = bcd_slm.fit(X, Y, starting_points)
+        except Exception as e:
+            warnings.warn(f"BCD-SLM failed: {e}")
+            bcd_slm_results = _fallback_estimate()
         bcd_slm_time = time.time() - bcd_start_time
 
+        slm_interior_start_time = time.time()
+        try:
+            slm_interior_results = slm_interior.fit(X, Y, starting_points)
+        except Exception as e:
+            warnings.warn(f"SLM-Interior failed: {e}")
+            slm_interior_results = _fallback_estimate()
+        slm_interior_time = time.time() - slm_interior_start_time
+
+        slm_oracle_start_time = time.time()
+        try:
+            slm_oracle_results = slm_oracle.fit(X, Y, starting_points)
+        except Exception as e:
+            warnings.warn(f"SLM-Oracle failed: {e}")
+            slm_oracle_results = _fallback_estimate()
+        slm_oracle_time = time.time() - slm_oracle_start_time
+
         em_start_time = time.time()
-        em_results = em.fit(X, Y, starting_points)
+        try:
+            em_results = em.fit(X, Y, starting_points)
+        except Exception as e:
+            warnings.warn(f"EM failed: {e}")
+            em_results = _fallback_estimate()
+            em_results["log_likelihood"] = -np.inf
         em_time = time.time() - em_start_time
 
-
         ecm_start_time = time.time()
-        ecm_results = ecm.fit(X, Y, starting_points)
+        try:
+            ecm_results = ecm.fit(X, Y, starting_points)
+        except Exception as e:
+            warnings.warn(f"ECM failed: {e}")
+            ecm_results = _fallback_estimate()
+            ecm_results["log_likelihood"] = -np.inf
         ecm_time = time.time() - ecm_start_time
 
-        slm_converged = 1 if slm_fixed_results.get("success", False) else 0
-        slm_manifold_converged = (
-            1
-            if isinstance(slm_manifold_results, dict) and slm_manifold_results.get("success", False)
-            else 0
-        )
-        slm_joint_converged = 1 if slm_joint_results.get("success", False) else 0
-        slm_oracle_converged = 1 if slm_oracle_results.get("success", False) else 0
+        slm_manifold_converged = 1 if slm_manifold_results.get("success", False) else 0
         bcd_slm_converged = 1 if bcd_slm_results.get("success", False) else 0
+        slm_interior_converged = 1 if slm_interior_results.get("success", False) else 0
+        slm_oracle_converged = 1 if slm_oracle_results.get("success", False) else 0
 
         em_converged = 1 if em_results.get("log_likelihood", -np.inf) > -np.inf else 0
-
         ecm_converged = 1 if ecm_results.get("log_likelihood", -np.inf) > -np.inf else 0
-
 
         stats_summary = {
             "trial_id": trial_id,
-            # Backward-compatible key: treat "slm" as the fixed-noise variant.
-            "slm": {
-                "runtime": slm_time,
-                "avg_time_per_start": slm_time / len(starting_points),
-                "converged": slm_converged,
-                "failed": 1 - slm_converged,
-                "convergence_rate": float(slm_converged),
-                "best_objective": slm_fixed_results.get("objective_value", np.inf),
-                "avg_iterations": slm_fixed_results.get("n_iterations", 0),
-            },
-            "slm_fixed": {
-                "runtime": slm_time,
-                "avg_time_per_start": slm_time / len(starting_points),
-                "converged": slm_converged,
-                "failed": 1 - slm_converged,
-                "convergence_rate": float(slm_converged),
-                "best_objective": slm_fixed_results.get("objective_value", np.inf),
-                "avg_iterations": slm_fixed_results.get("n_iterations", 0),
-            },
             "slm_manifold": {
                 "runtime": slm_manifold_time,
-                "avg_time_per_start": (slm_manifold_time / len(starting_points)) if slm_manifold_time else None,
+                "avg_time_per_start": slm_manifold_time / len(starting_points),
                 "converged": slm_manifold_converged,
                 "failed": 1 - slm_manifold_converged,
                 "convergence_rate": float(slm_manifold_converged),
-                "best_objective": (
-                    slm_manifold_results.get("objective_value", np.inf)
-                    if isinstance(slm_manifold_results, dict)
-                    else np.inf
-                ),
-                "avg_iterations": (
-                    slm_manifold_results.get("n_iterations", 0) if isinstance(slm_manifold_results, dict) else 0
-                ),
-            },
-            "slm_joint": {
-
-                "runtime": slm_joint_time,
-                "avg_time_per_start": slm_joint_time / len(starting_points_joint),
-                "converged": slm_joint_converged,
-                "failed": 1 - slm_joint_converged,
-                "convergence_rate": float(slm_joint_converged),
-                "best_objective": slm_joint_results.get("objective_value", np.inf),
-                "avg_iterations": slm_joint_results.get("n_iterations", 0),
-            },
-            "slm_oracle": {
-                "runtime": slm_oracle_time,
-                "avg_time_per_start": slm_oracle_time / len(starting_points),
-                "converged": slm_oracle_converged,
-                "failed": 1 - slm_oracle_converged,
-                "convergence_rate": float(slm_oracle_converged),
-                "best_objective": slm_oracle_results.get("objective_value", np.inf),
-                "avg_iterations": slm_oracle_results.get("n_iterations", 0),
+                "best_objective": slm_manifold_results.get("objective_value", np.inf),
+                "avg_iterations": slm_manifold_results.get("n_iterations", 0),
             },
             "bcd_slm": {
                 "runtime": bcd_slm_time,
@@ -336,6 +276,24 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
                 "convergence_rate": float(bcd_slm_converged),
                 "best_objective": bcd_slm_results.get("objective_value", np.inf),
                 "avg_iterations": bcd_slm_results.get("n_iterations", 0),
+            },
+            "slm_interior": {
+                "runtime": slm_interior_time,
+                "avg_time_per_start": slm_interior_time / len(starting_points),
+                "converged": slm_interior_converged,
+                "failed": 1 - slm_interior_converged,
+                "convergence_rate": float(slm_interior_converged),
+                "best_objective": slm_interior_results.get("objective_value", np.inf),
+                "avg_iterations": slm_interior_results.get("n_iterations", 0),
+            },
+            "slm_oracle": {
+                "runtime": slm_oracle_time,
+                "avg_time_per_start": slm_oracle_time / len(starting_points),
+                "converged": slm_oracle_converged,
+                "failed": 1 - slm_oracle_converged,
+                "convergence_rate": float(slm_oracle_converged),
+                "best_objective": slm_oracle_results.get("objective_value", np.inf),
+                "avg_iterations": slm_oracle_results.get("n_iterations", 0),
             },
             "em": {
                 "runtime": em_time,
@@ -357,7 +315,6 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
             },
         }
 
-
         if save_intermediate:
             stats_file = os.path.join(results_dir, f"trial_{trial_id:03d}_statistics.json")
             with open(stats_file, "w") as f:
@@ -366,19 +323,16 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
         return {
             "trial_id": trial_id,
             "true_params": true_params,
-            # Backward-compatible key: keep the original name used throughout the codebase.
-            "slm_results": slm_fixed_results,
             "slm_manifold_results": slm_manifold_results,
-            "slm_joint_results": slm_joint_results,
-            "slm_oracle_results": slm_oracle_results,
             "bcd_slm_results": bcd_slm_results,
+            "slm_interior_results": slm_interior_results,
+            "slm_oracle_results": slm_oracle_results,
             "em_results": em_results,
             "ecm_results": ecm_results,
-
-
             "data_shape": {"X": X.shape, "Y": Y.shape},
             "statistics": stats_summary,
         }
+
 
 
 
@@ -488,7 +442,8 @@ class PPLSExperiment:
         print(f"Model dimensions: p={self.p}, q={self.q}, r={self.r}")
         print(f"Sample size: {self.n_samples}")
         print(f"Starting points per algorithm: {self.n_starts}")
-        print(f"Algorithms: SLM-fixed, BCD-SLM, SLM-joint, SLM-Oracle, EM, ECM")
+        print(f"Algorithms: SLM-Manifold, BCD-SLM, SLM-Interior, SLM-Oracle, EM, ECM")
+
 
 
 
@@ -596,20 +551,22 @@ class PPLSExperiment:
         
         # Add runtime statistics summary if available
         if valid_results and 'statistics' in valid_results[0]:
-            total_slm_runtime = sum(r['statistics']['slm']['runtime'] for r in valid_results)
-            total_slm_joint_runtime = sum(r['statistics'].get('slm_joint', {}).get('runtime', 0.0) for r in valid_results)
+            total_slm_manifold_runtime = sum(r['statistics']['slm_manifold']['runtime'] for r in valid_results)
+            total_slm_interior_runtime = sum(r['statistics']['slm_interior']['runtime'] for r in valid_results)
             total_em_runtime = sum(r['statistics']['em']['runtime'] for r in valid_results)
             total_ecm_runtime = sum(r['statistics']['ecm']['runtime'] for r in valid_results)
-            avg_slm_convergence = np.mean([r['statistics']['slm']['convergence_rate'] for r in valid_results])
-            avg_slm_joint_convergence = np.mean([r['statistics'].get('slm_joint', {}).get('convergence_rate', 0.0) for r in valid_results])
+
+            avg_slm_manifold_convergence = np.mean([r['statistics']['slm_manifold']['convergence_rate'] for r in valid_results])
+            avg_slm_interior_convergence = np.mean([r['statistics']['slm_interior']['convergence_rate'] for r in valid_results])
             avg_em_convergence = np.mean([r['statistics']['em']['convergence_rate'] for r in valid_results])
             avg_ecm_convergence = np.mean([r['statistics']['ecm']['convergence_rate'] for r in valid_results])
-            
+
             print(f"\nAlgorithm Performance Summary:")
-            print(f"  SLM-fixed: {total_slm_runtime:.1f}s total, {avg_slm_convergence*100:.1f}% convergence")
-            print(f"  SLM-joint: {total_slm_joint_runtime:.1f}s total, {avg_slm_joint_convergence*100:.1f}% convergence")
-            print(f"  EM:        {total_em_runtime:.1f}s total, {avg_em_convergence*100:.1f}% convergence")
-            print(f"  ECM:       {total_ecm_runtime:.1f}s total, {avg_ecm_convergence*100:.1f}% convergence")
+            print(f"  SLM-Manifold: {total_slm_manifold_runtime:.1f}s total, {avg_slm_manifold_convergence*100:.1f}% convergence")
+            print(f"  SLM-Interior: {total_slm_interior_runtime:.1f}s total, {avg_slm_interior_convergence*100:.1f}% convergence")
+            print(f"  EM:           {total_em_runtime:.1f}s total, {avg_em_convergence*100:.1f}% convergence")
+            print(f"  ECM:          {total_ecm_runtime:.1f}s total, {avg_ecm_convergence*100:.1f}% convergence")
+
 
         
         print(f"{'='*60}\n")
@@ -674,18 +631,16 @@ class PPLSExperiment:
             trial_result = {
                 'trial_id': trial_id,
                 'true_params': true_params,
-                'slm_results': comparison_results['slm'],
-                'slm_manifold_results': comparison_results.get('slm_manifold'),
-                'slm_joint_results': comparison_results['slm_joint'],
-                'bcd_slm_results': comparison_results.get('bcd_slm'),
-
+                'slm_manifold_results': comparison_results['slm_manifold'],
+                'bcd_slm_results': comparison_results['bcd_slm'],
+                'slm_interior_results': comparison_results['slm_interior'],
                 'slm_oracle_results': comparison_results['slm_oracle'],
                 'em_results': comparison_results['em'],
                 'ecm_results': comparison_results['ecm'],
-
                 'data_shape': {'X': X.shape, 'Y': Y.shape},
                 'statistics': comparison_results.get('statistics', {})
             }
+
 
 
             
@@ -737,60 +692,38 @@ class PPLSExperiment:
             Results from all three algorithms
         """
         # Initialize algorithms
-        slm_fixed = ScalarLikelihoodMethod(
+        slm_cfg = self.config.get('algorithms', {}).get('slm_manifold', {})
+        slm_manifold = ScalarLikelihoodMethod(
             p=self.p, q=self.q, r=self.r,
-            optimizer=self.config['algorithms']['slm']['optimizer'],
-            max_iter=self.config['algorithms']['slm']['max_iter'],
-            use_noise_preestimation=self.config['algorithms']['slm']['use_noise_preestimation'],
-            gtol=self.config['algorithms']['slm'].get('gtol', 1e-3),
-            xtol=self.config['algorithms']['slm'].get('xtol', 1e-3),
-            barrier_tol=self.config['algorithms']['slm'].get('barrier_tol', 1e-3),
-            constraint_slack=self.config['algorithms']['slm'].get('constraint_slack', 1e-2),
+            optimizer=str(slm_cfg.get('optimizer', 'manifold')),
+            max_iter=int(slm_cfg.get('max_iter', 2000)),
+            use_noise_preestimation=bool(slm_cfg.get('use_noise_preestimation', True)),
         )
 
-        slm_manifold_cfg = self.config.get('algorithms', {}).get('slm_manifold', None)
-        slm_manifold = None
-        if isinstance(slm_manifold_cfg, dict) and slm_manifold_cfg:
-            slm_manifold = ScalarLikelihoodMethod(
-                p=self.p,
-                q=self.q,
-                r=self.r,
-                optimizer=str(slm_manifold_cfg.get('optimizer', 'manifold')),
-                max_iter=int(slm_manifold_cfg.get('max_iter', self.config['algorithms']['slm']['max_iter'])),
-                use_noise_preestimation=bool(slm_manifold_cfg.get('use_noise_preestimation', True)),
-                gtol=float(slm_manifold_cfg.get('gtol', self.config['algorithms']['slm'].get('gtol', 1e-3))),
-                xtol=float(slm_manifold_cfg.get('xtol', self.config['algorithms']['slm'].get('xtol', 1e-3))),
-                barrier_tol=float(slm_manifold_cfg.get('barrier_tol', self.config['algorithms']['slm'].get('barrier_tol', 1e-3))),
-                constraint_slack=float(slm_manifold_cfg.get('constraint_slack', self.config['algorithms']['slm'].get('constraint_slack', 1e-2))),
-            )
 
-        slm_joint_cfg = self.config.get('algorithms', {}).get('slm_joint', {})
-
-        slm_joint = ScalarLikelihoodMethod(
+        slm_interior_cfg = self.config.get('algorithms', {}).get('slm_interior', {})
+        slm_interior = ScalarLikelihoodMethod(
             p=self.p, q=self.q, r=self.r,
-            optimizer=str(slm_joint_cfg.get('optimizer', self.config['algorithms']['slm']['optimizer'])),
-            max_iter=int(slm_joint_cfg.get('max_iter', self.config['algorithms']['slm']['max_iter'])),
-            use_noise_preestimation=bool(slm_joint_cfg.get('use_noise_preestimation', True)),
-            optimize_noise_variances=True,
-            gtol=float(slm_joint_cfg.get('gtol', self.config['algorithms']['slm'].get('gtol', 1e-3))),
-            xtol=float(slm_joint_cfg.get('xtol', self.config['algorithms']['slm'].get('xtol', 1e-3))),
-            barrier_tol=float(slm_joint_cfg.get('barrier_tol', self.config['algorithms']['slm'].get('barrier_tol', 1e-3))),
-            constraint_slack=float(slm_joint_cfg.get('constraint_slack', self.config['algorithms']['slm'].get('constraint_slack', 1e-2))),
+            optimizer='trust-constr',
+            max_iter=int(slm_interior_cfg.get('max_iter', 2000)),
+            use_noise_preestimation=bool(slm_interior_cfg.get('use_noise_preestimation', True)),
+            gtol=float(slm_interior_cfg.get('gtol', 0.005)),
+            xtol=float(slm_interior_cfg.get('xtol', 0.005)),
+            barrier_tol=float(slm_interior_cfg.get('barrier_tol', 0.005)),
+            constraint_slack=float(slm_interior_cfg.get('constraint_slack', 0.005)),
+            initial_constr_penalty=float(slm_interior_cfg.get('initial_constr_penalty', 1.0)),
         )
 
-        # Oracle-noise variant: same optimiser/settings as SLM, but uses true (sigma_e^2, sigma_f^2).
+        # Oracle-noise variant: uses true (sigma_e^2, sigma_f^2).
         slm_oracle = ScalarLikelihoodMethod(
             p=self.p, q=self.q, r=self.r,
-            optimizer=self.config['algorithms']['slm']['optimizer'],
-            max_iter=self.config['algorithms']['slm']['max_iter'],
+            optimizer=str(slm_cfg.get('optimizer', 'manifold')),
+            max_iter=int(slm_cfg.get('max_iter', 2000)),
             use_noise_preestimation=False,
             fixed_sigma_e2=float(true_params.get('sigma_e2')),
             fixed_sigma_f2=float(true_params.get('sigma_f2')),
-            gtol=self.config['algorithms']['slm'].get('gtol', 1e-3),
-            xtol=self.config['algorithms']['slm'].get('xtol', 1e-3),
-            barrier_tol=self.config['algorithms']['slm'].get('barrier_tol', 1e-3),
-            constraint_slack=self.config['algorithms']['slm'].get('constraint_slack', 1e-2),
         )
+
 
         # BCD-SLM (paper Algorithm 1)
         bcd_cfg = self.config.get('algorithms', {}).get('bcd_slm', {})
@@ -813,76 +746,27 @@ class PPLSExperiment:
             tolerance=self.config['algorithms']['em']['tolerance']
         )
 
-        
         ecm = ECMAlgorithm(
             p=self.p, q=self.q, r=self.r,
             max_iter=self.config['algorithms']['ecm']['max_iter'],
             tolerance=self.config['algorithms']['ecm']['tolerance']
         )
-        
+
         print(f"\n{'='*60}")
         print(f"Trial {trial_id+1}: Algorithm Comparison")
         print(f"{'='*60}")
-        
-        # Run SLM-fixed first
-        print(f"Running SLM-fixed with {len(starting_points)} starting points...")
-        slm_start_time = time.time()
-        slm_results, slm_stats = self._run_algorithm_with_stats(
-            slm_fixed, X, Y, starting_points, trial_id, "SLM-fixed"
+
+        print(f"Running SLM-Manifold with {len(starting_points)} starting points...")
+        slm_manifold_start_time = time.time()
+        slm_manifold_results, slm_manifold_stats = self._run_algorithm_with_stats(
+            slm_manifold, X, Y, starting_points, trial_id, "SLM-Manifold"
         )
-        slm_time = time.time() - slm_start_time
-
-        print(f"SLM-fixed completed: {slm_time:.2f}s, convergence: {slm_stats['convergence_rate']*100:.1f}%")
-
-        # Optional SLM-Manifold (exact Stiefel constraints)
-        slm_manifold_results, slm_manifold_stats, slm_manifold_time = None, None, None
-        if slm_manifold is not None:
-            print(f"Running SLM-Manifold with {len(starting_points)} starting points...", flush=True)
-            t0 = time.time()
-            slm_manifold_results, slm_manifold_stats = self._run_algorithm_with_stats(
-                slm_manifold, X, Y, starting_points, trial_id, "SLM-Manifold"
-            )
-            slm_manifold_time = time.time() - t0
-            cr = float(slm_manifold_stats.get('convergence_rate', 0.0)) * 100.0
-            print(f"SLM-Manifold completed: {slm_manifold_time:.2f}s, convergence: {cr:.1f}%", flush=True)
-
-        # Run SLM-joint second (warm-started from the fixed solution)
-
-        theta0_warm = np.concatenate([
-            slm_results['W'].flatten(),
-            slm_results['C'].flatten(),
-            np.diag(slm_results['Sigma_t']),
-            np.diag(slm_results['B']),
-            [float(slm_results['sigma_h2']), float(slm_results['sigma_e2']), float(slm_results['sigma_f2'])],
-        ])
-        starting_points_joint = [theta0_warm] + list(starting_points)
-
-        print(f"Running SLM-joint with {len(starting_points_joint)} starting points...")
-        slm_joint_start_time = time.time()
-        slm_joint_results, slm_joint_stats = self._run_algorithm_with_stats(
-            slm_joint, X, Y, starting_points_joint, trial_id, "SLM-joint"
-        )
-        slm_joint_time = time.time() - slm_joint_start_time
-
+        slm_manifold_time = time.time() - slm_manifold_start_time
         print(
-            f"SLM-joint completed: {slm_joint_time:.2f}s, "
-            f"convergence: {slm_joint_stats['convergence_rate']*100:.1f}%"
+            f"SLM-Manifold completed: {slm_manifold_time:.2f}s, "
+            f"convergence: {slm_manifold_stats['convergence_rate']*100:.1f}%"
         )
 
-        # Run SLM-Oracle (oracle noise) third
-        print(f"Running SLM-Oracle with {len(starting_points)} starting points...")
-        slm_oracle_start_time = time.time()
-        slm_oracle_results, slm_oracle_stats = self._run_algorithm_with_stats(
-            slm_oracle, X, Y, starting_points, trial_id, "SLM-Oracle"
-        )
-        slm_oracle_time = time.time() - slm_oracle_start_time
-
-        print(
-            f"SLM-Oracle completed: {slm_oracle_time:.2f}s, "
-            f"convergence: {slm_oracle_stats['convergence_rate']*100:.1f}%"
-        )
-
-        # Run BCD-SLM (block-coordinate descent) next
         print(f"Running BCD-SLM with {len(starting_points)} starting points...")
         bcd_start_time = time.time()
         bcd_slm_results, bcd_slm_stats = self._run_algorithm_with_stats(
@@ -894,8 +778,27 @@ class PPLSExperiment:
             f"convergence: {bcd_slm_stats['convergence_rate']*100:.1f}%"
         )
 
-        # Run EM third
+        print(f"Running SLM-Interior with {len(starting_points)} starting points...")
+        slm_interior_start_time = time.time()
+        slm_interior_results, slm_interior_stats = self._run_algorithm_with_stats(
+            slm_interior, X, Y, starting_points, trial_id, "SLM-Interior"
+        )
+        slm_interior_time = time.time() - slm_interior_start_time
+        print(
+            f"SLM-Interior completed: {slm_interior_time:.2f}s, "
+            f"convergence: {slm_interior_stats['convergence_rate']*100:.1f}%"
+        )
 
+        print(f"Running SLM-Oracle with {len(starting_points)} starting points...")
+        slm_oracle_start_time = time.time()
+        slm_oracle_results, slm_oracle_stats = self._run_algorithm_with_stats(
+            slm_oracle, X, Y, starting_points, trial_id, "SLM-Oracle"
+        )
+        slm_oracle_time = time.time() - slm_oracle_start_time
+        print(
+            f"SLM-Oracle completed: {slm_oracle_time:.2f}s, "
+            f"convergence: {slm_oracle_stats['convergence_rate']*100:.1f}%"
+        )
 
         print(f"Running EM with {len(starting_points)} starting points...")
         em_start_time = time.time()
@@ -903,61 +806,46 @@ class PPLSExperiment:
             em, X, Y, starting_points, trial_id, "EM"
         )
         em_time = time.time() - em_start_time
-        
         print(f"EM completed: {em_time:.2f}s, convergence: {em_stats['convergence_rate']*100:.1f}%")
-        
-        # Run ECM third
+
         print(f"Running ECM with {len(starting_points)} starting points...")
         ecm_start_time = time.time()
         ecm_results, ecm_stats = self._run_algorithm_with_stats(
             ecm, X, Y, starting_points, trial_id, "ECM"
         )
         ecm_time = time.time() - ecm_start_time
-        
         print(f"ECM completed: {ecm_time:.2f}s, convergence: {ecm_stats['convergence_rate']*100:.1f}%")
-        
+
         print(f"{'='*60}")
-        
-        # Compile statistics
+
         stats_summary = {
             'trial_id': trial_id,
-            # Backward-compatible key: treat 'slm' as the fixed-noise variant.
-            'slm': {
-                'runtime': slm_time,
-                'avg_time_per_start': slm_time/len(starting_points),
-                'converged': slm_stats['converged'],
-                'failed': slm_stats['failed'],
-                'convergence_rate': slm_stats['converged']/len(starting_points),
-                'best_objective': slm_stats['best_objective'],
-                'avg_iterations': slm_stats['avg_iterations']
-            },
-            'slm_fixed': {
-                'runtime': slm_time,
-                'avg_time_per_start': slm_time/len(starting_points),
-                'converged': slm_stats['converged'],
-                'failed': slm_stats['failed'],
-                'convergence_rate': slm_stats['converged']/len(starting_points),
-                'best_objective': slm_stats['best_objective'],
-                'avg_iterations': slm_stats['avg_iterations']
-            },
             'slm_manifold': {
                 'runtime': slm_manifold_time,
-                'avg_time_per_start': (slm_manifold_time/len(starting_points)) if slm_manifold_time else None,
-                'converged': int(slm_manifold_stats['converged']) if slm_manifold_stats else 0,
-                'failed': int(slm_manifold_stats['failed']) if slm_manifold_stats else 0,
-                'convergence_rate': float(slm_manifold_stats['converged']/len(starting_points)) if slm_manifold_stats else 0.0,
-                'best_objective': float(slm_manifold_stats['best_objective']) if slm_manifold_stats else float('inf'),
-                'avg_iterations': float(slm_manifold_stats['avg_iterations']) if slm_manifold_stats else 0.0,
+                'avg_time_per_start': slm_manifold_time/len(starting_points),
+                'converged': slm_manifold_stats['converged'],
+                'failed': slm_manifold_stats['failed'],
+                'convergence_rate': float(slm_manifold_stats['converged']),
+                'best_objective': slm_manifold_stats['best_objective'],
+                'avg_iterations': slm_manifold_stats['avg_iterations']
             },
-            'slm_joint': {
-
-                'runtime': slm_joint_time,
-                'avg_time_per_start': slm_joint_time/len(starting_points_joint),
-                'converged': slm_joint_stats['converged'],
-                'failed': slm_joint_stats['failed'],
-                'convergence_rate': slm_joint_stats['converged']/len(starting_points_joint),
-                'best_objective': slm_joint_stats['best_objective'],
-                'avg_iterations': slm_joint_stats['avg_iterations']
+            'bcd_slm': {
+                'runtime': bcd_slm_time,
+                'avg_time_per_start': bcd_slm_time/len(starting_points),
+                'converged': bcd_slm_stats['converged'],
+                'failed': bcd_slm_stats['failed'],
+                'convergence_rate': float(bcd_slm_stats['converged']),
+                'best_objective': bcd_slm_stats['best_objective'],
+                'avg_iterations': bcd_slm_stats['avg_iterations']
+            },
+            'slm_interior': {
+                'runtime': slm_interior_time,
+                'avg_time_per_start': slm_interior_time/len(starting_points),
+                'converged': slm_interior_stats['converged'],
+                'failed': slm_interior_stats['failed'],
+                'convergence_rate': float(slm_interior_stats['converged']),
+                'best_objective': slm_interior_stats['best_objective'],
+                'avg_iterations': slm_interior_stats['avg_iterations']
             },
             'slm_oracle': {
                 'runtime': slm_oracle_time,
@@ -965,25 +853,15 @@ class PPLSExperiment:
                 'converged': slm_oracle_stats['converged'],
                 'failed': slm_oracle_stats['failed'],
                 'convergence_rate': float(slm_oracle_stats['converged']),
-
                 'best_objective': slm_oracle_stats['best_objective'],
                 'avg_iterations': slm_oracle_stats['avg_iterations']
-            },
-            'bcd_slm': {
-                'runtime': bcd_slm_time,
-                'avg_time_per_start': bcd_slm_time/len(starting_points),
-                'converged': bcd_slm_stats['converged'],
-                'failed': bcd_slm_stats['failed'],
-                'convergence_rate': bcd_slm_stats['converged']/len(starting_points),
-                'best_objective': bcd_slm_stats['best_objective'],
-                'avg_iterations': bcd_slm_stats['avg_iterations']
             },
             'em': {
                 'runtime': em_time,
                 'avg_time_per_start': em_time/len(starting_points),
                 'converged': em_stats['converged'],
                 'failed': em_stats['failed'],
-                'convergence_rate': em_stats['converged']/len(starting_points),
+                'convergence_rate': float(em_stats['converged']),
                 'best_likelihood': em_stats['best_likelihood'],
                 'avg_iterations': em_stats['avg_iterations']
             },
@@ -993,33 +871,26 @@ class PPLSExperiment:
                 'converged': ecm_stats['converged'],
                 'failed': ecm_stats['failed'],
                 'convergence_rate': float(ecm_stats['converged']),
-
                 'best_likelihood': ecm_stats['best_likelihood'],
                 'avg_iterations': ecm_stats['avg_iterations']
             }
         }
 
-
-        
-        # Save per-trial statistics (optional)
         if self.config.get('output', {}).get('save_intermediate', True):
             stats_file = os.path.join(self.results_dir, f"trial_{trial_id:03d}_statistics.json")
             with open(stats_file, 'w') as f:
                 json.dump(stats_summary, f, indent=4)
 
-        
         return {
-            # Backward-compatible key: treat 'slm' as the fixed-noise variant.
-            'slm': slm_results,
             'slm_manifold': slm_manifold_results,
-            'slm_joint': slm_joint_results,
-            'slm_oracle': slm_oracle_results,
             'bcd_slm': bcd_slm_results,
+            'slm_interior': slm_interior_results,
+            'slm_oracle': slm_oracle_results,
             'em': em_results,
             'ecm': ecm_results,
             'statistics': stats_summary
-
         }
+
 
 
 
@@ -1050,13 +921,34 @@ class PPLSExperiment:
         stats : dict
             Running statistics
         """
-        # Use the algorithm's fit method directly
-        results = algorithm.fit(X, Y, starting_points)
-        
-        # Compile basic statistics
-        # Treat any SLM variant (fixed/joint/oracle/manifold) as objective-minimisation.
-        if str(algorithm_name).lower().startswith("slm"):
+        algo_lower = str(algorithm_name).lower()
 
+        def _fallback_estimate() -> Dict[str, Any]:
+            return {
+                'W': np.zeros((self.p, self.r)),
+                'C': np.zeros((self.q, self.r)),
+                'B': np.eye(self.r),
+                'Sigma_t': np.eye(self.r),
+                'sigma_e2': 0.0,
+                'sigma_f2': 0.0,
+                'sigma_h2': 0.0,
+                'objective_value': float('inf'),
+                'n_iterations': 0,
+                'success': False,
+            }
+
+        # Use the algorithm's fit method with try/except guard.
+        try:
+            results = algorithm.fit(X, Y, starting_points)
+        except Exception as e:
+            warnings.warn(f"{algorithm_name} failed: {e}")
+            results = _fallback_estimate()
+            if algo_lower in ("em", "ecm"):
+                results['log_likelihood'] = -np.inf
+
+        # Compile basic statistics
+        is_objective = ('slm' in algo_lower) or ('bcd' in algo_lower) or ('objective_value' in results)
+        if is_objective:
             stats = {
                 'converged': 1 if results.get('success', False) else 0,
                 'failed': 0 if results.get('success', False) else 1,
@@ -1065,7 +957,6 @@ class PPLSExperiment:
                 'best_objective': results.get('objective_value', np.inf)
             }
         else:  # EM / ECM
-
             stats = {
                 'converged': 1 if results.get('log_likelihood', -np.inf) > -np.inf else 0,
                 'failed': 0 if results.get('log_likelihood', -np.inf) > -np.inf else 1,
@@ -1074,8 +965,8 @@ class PPLSExperiment:
                 'best_likelihood': results.get('log_likelihood', -np.inf)
             }
 
-        
         return results, stats
+
         
     def analyze_results(self, trial_results: List[Dict]) -> Dict:
         """
@@ -1092,111 +983,78 @@ class PPLSExperiment:
             Summary statistics and performance comparison
         """
         # Initialize metrics calculators
-        slm_metrics_list = []
-        bcd_slm_metrics_list = []
         slm_manifold_metrics_list = []
-        slm_joint_metrics_list = []
+        bcd_slm_metrics_list = []
+        slm_interior_metrics_list = []
         slm_oracle_metrics_list = []
         em_metrics_list = []
         ecm_metrics_list = []
-        
+
         # Collect runtime statistics
-        slm_runtime_stats = []
-        bcd_slm_runtime_stats = []
         slm_manifold_runtime_stats = []
-        slm_joint_runtime_stats = []
+        bcd_slm_runtime_stats = []
+        slm_interior_runtime_stats = []
         slm_oracle_runtime_stats = []
         em_runtime_stats = []
         ecm_runtime_stats = []
 
-
-
-
-        
         # Collect metrics for each trial
         for trial in trial_results:
-            # Create performance metric calculator
             metrics_calc = PerformanceMetrics(trial['true_params'])
-            
-            # Compute metrics for SLM-fixed
-            slm_metrics = metrics_calc.compute_mse(trial['slm_results'])
-            slm_metrics_list.append(slm_metrics)
 
-            # Compute metrics for BCD-SLM (if present)
+            slm_manifold_metrics = metrics_calc.compute_mse(trial['slm_manifold_results'])
+            slm_manifold_metrics_list.append(slm_manifold_metrics)
+
             bcd_res = trial.get('bcd_slm_results', None)
             if isinstance(bcd_res, dict) and bcd_res:
                 bcd_metrics = metrics_calc.compute_mse(bcd_res)
                 bcd_slm_metrics_list.append(bcd_metrics)
 
-            # Compute metrics for SLM-Manifold (if present)
+            slm_int_res = trial.get('slm_interior_results', None)
+            if isinstance(slm_int_res, dict) and slm_int_res:
+                slm_int_metrics = metrics_calc.compute_mse(slm_int_res)
+                slm_interior_metrics_list.append(slm_int_metrics)
 
-            slm_man_res = trial.get('slm_manifold_results', None)
-            if isinstance(slm_man_res, dict) and slm_man_res:
-                slm_man_metrics = metrics_calc.compute_mse(slm_man_res)
-                slm_manifold_metrics_list.append(slm_man_metrics)
-
-            # Compute metrics for SLM-joint
-
-            if 'slm_joint_results' in trial:
-                slm_joint_metrics = metrics_calc.compute_mse(trial['slm_joint_results'])
-                slm_joint_metrics_list.append(slm_joint_metrics)
-            
-            # Compute metrics for SLM-Oracle
             if 'slm_oracle_results' in trial:
                 slm_oracle_metrics = metrics_calc.compute_mse(trial['slm_oracle_results'])
                 slm_oracle_metrics_list.append(slm_oracle_metrics)
 
-
-            # Compute metrics for EM
             em_metrics = metrics_calc.compute_mse(trial['em_results'])
             em_metrics_list.append(em_metrics)
-            
-            # Compute metrics for ECM
+
             ecm_metrics = metrics_calc.compute_mse(trial['ecm_results'])
             ecm_metrics_list.append(ecm_metrics)
-            
-            # Collect runtime statistics if available
+
             if 'statistics' in trial:
-                slm_runtime_stats.append(trial['statistics']['slm'])
+                slm_manifold_runtime_stats.append(trial['statistics']['slm_manifold'])
                 if 'bcd_slm' in trial['statistics']:
                     bcd_slm_runtime_stats.append(trial['statistics']['bcd_slm'])
-                if 'slm_manifold' in trial['statistics']:
-                    slm_manifold_runtime_stats.append(trial['statistics']['slm_manifold'])
-                if 'slm_joint' in trial['statistics']:
-                    slm_joint_runtime_stats.append(trial['statistics']['slm_joint'])
-
+                if 'slm_interior' in trial['statistics']:
+                    slm_interior_runtime_stats.append(trial['statistics']['slm_interior'])
                 if 'slm_oracle' in trial['statistics']:
                     slm_oracle_runtime_stats.append(trial['statistics']['slm_oracle'])
                 em_runtime_stats.append(trial['statistics']['em'])
                 ecm_runtime_stats.append(trial['statistics']['ecm'])
 
-
-
-        
         # Aggregate metrics
         analysis = {
-            'slm': self._aggregate_metrics(slm_metrics_list),
-            'bcd_slm': self._aggregate_metrics(bcd_slm_metrics_list),
             'slm_manifold': self._aggregate_metrics(slm_manifold_metrics_list),
-            'slm_joint': self._aggregate_metrics(slm_joint_metrics_list),
+            'bcd_slm': self._aggregate_metrics(bcd_slm_metrics_list),
+            'slm_interior': self._aggregate_metrics(slm_interior_metrics_list),
             'slm_oracle': self._aggregate_metrics(slm_oracle_metrics_list),
             'em': self._aggregate_metrics(em_metrics_list),
             'ecm': self._aggregate_metrics(ecm_metrics_list),
-            'comparison': self._compare_methods(slm_metrics_list, em_metrics_list, ecm_metrics_list)
+            'comparison': self._compare_methods(slm_manifold_metrics_list, em_metrics_list, ecm_metrics_list)
         }
 
-
-
-
-        
         # Add runtime statistics
-        if slm_runtime_stats and em_runtime_stats and ecm_runtime_stats:
+        if slm_manifold_runtime_stats and em_runtime_stats and ecm_runtime_stats:
             runtime_statistics = {
-                'slm': self._aggregate_runtime_stats(slm_runtime_stats),
+                'slm_manifold': self._aggregate_runtime_stats(slm_manifold_runtime_stats),
                 'em': self._aggregate_runtime_stats(em_runtime_stats),
                 'ecm': self._aggregate_runtime_stats(ecm_runtime_stats),
                 'overall': {
-                    'total_runtime_slm': sum(s['runtime'] for s in slm_runtime_stats),
+                    'total_runtime_slm_manifold': sum(s['runtime'] for s in slm_manifold_runtime_stats),
                     'total_runtime_em': sum(s['runtime'] for s in em_runtime_stats),
                     'total_runtime_ecm': sum(s['runtime'] for s in ecm_runtime_stats)
                 }
@@ -1208,18 +1066,10 @@ class PPLSExperiment:
                     s['runtime'] for s in bcd_slm_runtime_stats if s.get('runtime') is not None
                 )
 
-            if slm_manifold_runtime_stats:
-                runtime_statistics['slm_manifold'] = self._aggregate_runtime_stats(slm_manifold_runtime_stats)
-
-                runtime_statistics['overall']['total_runtime_slm_manifold'] = sum(
-                    s['runtime'] for s in slm_manifold_runtime_stats if s.get('runtime') is not None
-                )
-
-            if slm_joint_runtime_stats:
-
-                runtime_statistics['slm_joint'] = self._aggregate_runtime_stats(slm_joint_runtime_stats)
-                runtime_statistics['overall']['total_runtime_slm_joint'] = sum(
-                    s['runtime'] for s in slm_joint_runtime_stats
+            if slm_interior_runtime_stats:
+                runtime_statistics['slm_interior'] = self._aggregate_runtime_stats(slm_interior_runtime_stats)
+                runtime_statistics['overall']['total_runtime_slm_interior'] = sum(
+                    s['runtime'] for s in slm_interior_runtime_stats if s.get('runtime') is not None
                 )
 
             if slm_oracle_runtime_stats:
@@ -1228,19 +1078,18 @@ class PPLSExperiment:
                     s['runtime'] for s in slm_oracle_runtime_stats
                 )
 
-
             analysis['runtime_statistics'] = runtime_statistics
 
-        
         # Generate summary table
         if trial_results:
             metrics_calc = PerformanceMetrics(trial_results[0]['true_params'])
             summary_table = metrics_calc.generate_summary_table(
-                slm_metrics_list, bcd_slm_metrics_list, em_metrics_list, ecm_metrics_list
+                slm_manifold_metrics_list, bcd_slm_metrics_list, em_metrics_list, ecm_metrics_list
             )
             analysis['summary_table'] = summary_table
-            
+
         return analysis
+
         
     def _aggregate_metrics(self, metrics_list: List[Dict]) -> Dict:
         """Aggregate metrics across trials."""
@@ -1329,9 +1178,21 @@ class PPLSExperiment:
         if 'runtime_statistics' in results['analysis']:
             runtime = results['analysis']['runtime_statistics']
             readable_summary['algorithm_performance'] = {
-                'slm': {
-                    'avg_time_seconds': round(runtime.get('slm', {}).get('avg_runtime', 0), 2),
-                    'avg_convergence_rate_percent': round(runtime.get('slm', {}).get('avg_convergence_rate', 0) * 100, 1)
+                'slm_manifold': {
+                    'avg_time_seconds': round(runtime.get('slm_manifold', {}).get('avg_runtime', 0), 2),
+                    'avg_convergence_rate_percent': round(runtime.get('slm_manifold', {}).get('avg_convergence_rate', 0) * 100, 1)
+                },
+                'bcd_slm': {
+                    'avg_time_seconds': round(runtime.get('bcd_slm', {}).get('avg_runtime', 0), 2),
+                    'avg_convergence_rate_percent': round(runtime.get('bcd_slm', {}).get('avg_convergence_rate', 0) * 100, 1)
+                },
+                'slm_interior': {
+                    'avg_time_seconds': round(runtime.get('slm_interior', {}).get('avg_runtime', 0), 2),
+                    'avg_convergence_rate_percent': round(runtime.get('slm_interior', {}).get('avg_convergence_rate', 0) * 100, 1)
+                },
+                'slm_oracle': {
+                    'avg_time_seconds': round(runtime.get('slm_oracle', {}).get('avg_runtime', 0), 2),
+                    'avg_convergence_rate_percent': round(runtime.get('slm_oracle', {}).get('avg_convergence_rate', 0) * 100, 1)
                 },
                 'em': {
                     'avg_time_seconds': round(runtime.get('em', {}).get('avg_runtime', 0), 2),
@@ -1342,9 +1203,9 @@ class PPLSExperiment:
                     'avg_convergence_rate_percent': round(runtime.get('ecm', {}).get('avg_convergence_rate', 0) * 100, 1)
                 }
             }
-        
+
         # Add MSE comparison summary
-        for method in ['slm', 'em', 'ecm']:
+        for method in ['slm_manifold', 'bcd_slm', 'slm_interior', 'slm_oracle', 'em', 'ecm']:
             if method in results['analysis']:
                 method_mse = {}
                 for param in ['W', 'C', 'B', 'Sigma_t', 'sigma_h2']:
@@ -1355,6 +1216,7 @@ class PPLSExperiment:
                             'std': round(results['analysis'][method][key]['std'], 6)
                         }
                 readable_summary['parameter_estimation_quality'][method] = method_mse
+
         
         with open(os.path.join(self.results_dir, "experiment_summary.json"), 'w') as f:
             json.dump(readable_summary, f, indent=2)

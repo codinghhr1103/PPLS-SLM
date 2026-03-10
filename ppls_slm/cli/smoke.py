@@ -19,7 +19,7 @@ import argparse
 
 import numpy as np
 
-from ppls_slm.algorithms import InitialPointGenerator, ScalarLikelihoodMethod
+from ppls_slm.algorithms import EMAlgorithm, InitialPointGenerator, ScalarLikelihoodMethod
 from ppls_slm.bcd_slm import BCDScalarLikelihoodMethod
 from ppls_slm.apps.prediction import predict_conditional_mean
 from ppls_slm.ppls_model import PPLSModel
@@ -66,23 +66,23 @@ def main() -> int:
     init = InitialPointGenerator(p=p, q=q, r=r, n_starts=1, random_seed=int(args.seed))
     starts = init.generate_starting_points()
 
-    slm = ScalarLikelihoodMethod(
+    slm_manifold = ScalarLikelihoodMethod(
         p=p,
         q=q,
         r=r,
-        optimizer="trust-constr",
+        optimizer="manifold",
         max_iter=int(args.max_iter),
         use_noise_preestimation=True,
         verbose=False,
         progress_every=999999,
     )
 
-    res = slm.fit(X, Y, starts)
+    slm_manifold_res = slm_manifold.fit(X, Y, starts)
 
     required = ("W", "C", "B", "Sigma_t", "sigma_e2", "sigma_f2", "sigma_h2")
-    missing = [k for k in required if k not in res]
+    missing = [k for k in required if k not in slm_manifold_res]
     if missing:
-        raise RuntimeError(f"SLM fit result missing keys: {missing}")
+        raise RuntimeError(f"SLM-Manifold fit result missing keys: {missing}")
 
     # Also sanity-check BCD-SLM (new in NeurIPS version).
     try:
@@ -104,8 +104,12 @@ def main() -> int:
         # Optional dependency guard (should not happen in our default requirements).
         print(f"[WARN] skipping BCD-SLM smoke (missing dependency): {e}")
 
+    # Sanity-check EM (fast baseline).
+    em = EMAlgorithm(p=p, q=q, r=r, max_iter=int(args.max_iter), tolerance=1e-3)
+    _ = em.fit(X, Y, starts)
+
     # Quick prediction sanity check.
-    y_hat = predict_conditional_mean(X[:5], res)
+    y_hat = predict_conditional_mean(X[:5], slm_manifold_res)
     assert y_hat.shape == (5, q), f"Unexpected prediction shape: {y_hat.shape}"
 
 

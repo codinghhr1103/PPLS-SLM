@@ -28,16 +28,21 @@
       "n_starts": 8,
       "random_seed": 42
     },
-    "slm": {
+    "slm_manifold": {
       "optimizer": "manifold",
+      "max_iter": 2000,
+      "use_noise_preestimation": true
+    },
+    "slm_interior": {
+      "optimizer": "trust-constr",
       "max_iter": 2000,
       "use_noise_preestimation": true,
       "gtol": 0.005,
       "xtol": 0.005,
       "barrier_tol": 0.005,
-      "constraint_slack": 0.005
+      "constraint_slack": 0.005,
+      "initial_constr_penalty": 1.0
     },
-    "slm_manifold": {},
     "bcd_slm": {
       "max_outer_iter": 200,
       "n_cg_steps_W": 5,
@@ -45,10 +50,7 @@
       "tolerance": 0.0001,
       "use_noise_preestimation": true
     },
-
     "em": {
-
-
       "max_iter": 2000,
       "tolerance": 0.005
     },
@@ -65,7 +67,7 @@
   },
   "output": {
     "save_intermediate": true,
-    "base_dir": "C:/Users/ASUS/Desktop/ECAI-PPLS-SLM/output",
+    "base_dir": "output",
     "figure_format": "png",
     "force_data_generation": true,
     "force_parameter_estimation": true,

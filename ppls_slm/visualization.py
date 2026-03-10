@@ -57,6 +57,8 @@ from datetime import datetime
 import json
 import pickle
 
+from .method_registry import display_name
+
 
 class PPLSVisualizer:
     """
@@ -117,12 +119,21 @@ class PPLSVisualizer:
             Which component to plot (default: first component)
         """
         # Extract parameters
-        true_params = trial_result['true_params']
-        slm_results = trial_result['slm_results']
-        bcd_slm_results = trial_result.get('bcd_slm_results')
-        slm_oracle_results = trial_result.get('slm_oracle_results')
-        em_results = trial_result['em_results']
-        ecm_results = trial_result['ecm_results']
+        true_params = trial_result["true_params"]
+
+        slm_manifold_results = trial_result.get("slm_manifold_results")
+        slm_interior_results = trial_result.get("slm_interior_results")
+        bcd_slm_results = trial_result.get("bcd_slm_results")
+        slm_oracle_results = trial_result.get("slm_oracle_results")
+        em_results = trial_result.get("em_results")
+        ecm_results = trial_result.get("ecm_results")
+
+        if not isinstance(slm_manifold_results, dict) or not slm_manifold_results:
+            raise KeyError("trial_result missing slm_manifold_results")
+        if not isinstance(em_results, dict) or not em_results:
+            raise KeyError("trial_result missing em_results")
+        if not isinstance(ecm_results, dict) or not ecm_results:
+            raise KeyError("trial_result missing ecm_results")
 
 
         W_bcd = None
@@ -140,23 +151,25 @@ class PPLSVisualizer:
         
         # Create separate figures for W and C
         fig_W = self.loading_plotter.plot_W_comparison(
-            true_params['W'],
-            slm_results['W'],
-            em_results['W'],
-            ecm_results['W'],
+            true_params["W"],
+            slm_manifold_results["W"],
+            em_results["W"],
+            ecm_results["W"],
             component_idx,
             W_bcd=W_bcd,
+            W_slm_interior=(slm_interior_results.get("W") if isinstance(slm_interior_results, dict) else None),
             W_slm_oracle=W_slm_oracle,
         )
 
         
         fig_C = self.loading_plotter.plot_C_comparison(
-            true_params['C'],
-            slm_results['C'],
-            em_results['C'],
-            ecm_results['C'],
+            true_params["C"],
+            slm_manifold_results["C"],
+            em_results["C"],
+            ecm_results["C"],
             component_idx,
             C_bcd=C_bcd,
+            C_slm_interior=(slm_interior_results.get("C") if isinstance(slm_interior_results, dict) else None),
             C_slm_oracle=C_slm_oracle,
         )
 
@@ -181,23 +194,42 @@ class PPLSVisualizer:
         analysis_results : dict
             Analysis results from experiment
         """
-        # Extract metrics for all three algorithms
-        slm_metrics = analysis_results.get('slm', {})
-        bcd_metrics = analysis_results.get('bcd_slm', {})
-        em_metrics = analysis_results.get('em', {})
-        ecm_metrics = analysis_results.get('ecm', {})
-        
-        # Create MSE comparison bar plot
-        fig = self.performance_plotter.plot_mse_bars(slm_metrics, bcd_metrics, em_metrics, ecm_metrics)
+        # Extract metrics for all algorithms used in Table 2 / Figure 4
+        slm_manifold_metrics = analysis_results.get("slm_manifold", {})
+        bcd_metrics = analysis_results.get("bcd_slm", {})
+        slm_interior_metrics = analysis_results.get("slm_interior", {})
+        em_metrics = analysis_results.get("em", {})
+        ecm_metrics = analysis_results.get("ecm", {})
 
-        
-        filename = f'Figure_4_MSE_Comparison.{self.figure_format}'
-        fig.savefig(os.path.join(self.figure_dir, filename), 
-                   bbox_inches='tight', dpi=300, facecolor='white')
+        metrics_by_method = {
+            "slm_manifold": slm_manifold_metrics,
+            "bcd_slm": bcd_metrics,
+            "slm_interior": slm_interior_metrics,
+            "em": em_metrics,
+            "ecm": ecm_metrics,
+        }
+
+        # Create MSE comparison bar plot
+        fig = self.performance_plotter.plot_mse_bars(metrics_by_method)
+
+        filename = f"Figure_4_MSE_Comparison.{self.figure_format}"
+        fig.savefig(
+            os.path.join(self.figure_dir, filename),
+            bbox_inches="tight",
+            dpi=300,
+            facecolor="white",
+        )
         plt.close(fig)
-        
+
         # Export MSE comparison to Excel
-        self._export_mse_to_excel(slm_metrics, bcd_metrics, em_metrics, ecm_metrics)
+        self._export_mse_to_excel(
+            slm_manifold_metrics,
+            bcd_metrics,
+            slm_interior_metrics,
+            em_metrics,
+            ecm_metrics,
+        )
+
 
             
     def plot_convergence_history(self, trial_results: List[Dict]):
@@ -210,78 +242,75 @@ class PPLSVisualizer:
             Results from all trials
         """
         # Extract convergence data (iterations are summarised over successful trials only).
-        slm_iterations: List[int] = []
+        slm_manifold_iterations: List[int] = []
         bcd_slm_iterations: List[int] = []
-        slm_joint_iterations: List[int] = []
+        slm_interior_iterations: List[int] = []
         slm_oracle_iterations: List[int] = []
         em_iterations: List[int] = []
         ecm_iterations: List[int] = []
 
-        slm_success: List[int] = []
+        slm_manifold_success: List[int] = []
         bcd_slm_success: List[int] = []
-        slm_joint_success: List[int] = []
+        slm_interior_success: List[int] = []
         slm_oracle_success: List[int] = []
         em_success: List[int] = []
         ecm_success: List[int] = []
 
-
-
         for trial in trial_results:
-            slm_res = trial.get('slm_results', {})
-            slm_ok = bool(slm_res.get('success', False))
-            slm_success.append(int(slm_ok))
-            if slm_ok and 'n_iterations' in slm_res:
-                slm_iterations.append(int(slm_res['n_iterations']))
+            slm_manifold_res = trial.get("slm_manifold_results", {})
+            slm_manifold_ok = bool(slm_manifold_res.get("success", False))
+            slm_manifold_success.append(int(slm_manifold_ok))
+            if slm_manifold_ok and "n_iterations" in slm_manifold_res:
+                slm_manifold_iterations.append(int(slm_manifold_res["n_iterations"]))
 
-            bcd_res = trial.get('bcd_slm_results', {})
-            bcd_ok = bool(bcd_res.get('success', False))
+            bcd_res = trial.get("bcd_slm_results", {})
+            bcd_ok = bool(bcd_res.get("success", False))
             bcd_slm_success.append(int(bcd_ok))
-            if bcd_ok and 'n_iterations' in bcd_res:
-                bcd_slm_iterations.append(int(bcd_res['n_iterations']))
+            if bcd_ok and "n_iterations" in bcd_res:
+                bcd_slm_iterations.append(int(bcd_res["n_iterations"]))
 
-            slm_joint_res = trial.get('slm_joint_results', {})
+            slm_interior_res = trial.get("slm_interior_results", {})
+            slm_interior_ok = bool(slm_interior_res.get("success", False))
+            slm_interior_success.append(int(slm_interior_ok))
+            if slm_interior_ok and "n_iterations" in slm_interior_res:
+                slm_interior_iterations.append(int(slm_interior_res["n_iterations"]))
 
-            slm_joint_ok = bool(slm_joint_res.get('success', False))
-            slm_joint_success.append(int(slm_joint_ok))
-            if slm_joint_ok and 'n_iterations' in slm_joint_res:
-                slm_joint_iterations.append(int(slm_joint_res['n_iterations']))
-
-            slm_or_res = trial.get('slm_oracle_results', {})
-            slm_or_ok = bool(slm_or_res.get('success', False))
+            slm_or_res = trial.get("slm_oracle_results", {})
+            slm_or_ok = bool(slm_or_res.get("success", False))
             slm_oracle_success.append(int(slm_or_ok))
-            if slm_or_ok and 'n_iterations' in slm_or_res:
-                slm_oracle_iterations.append(int(slm_or_res['n_iterations']))
+            if slm_or_ok and "n_iterations" in slm_or_res:
+                slm_oracle_iterations.append(int(slm_or_res["n_iterations"]))
 
-            em_res = trial.get('em_results', {})
-            em_ok = bool(em_res.get('log_likelihood', -np.inf) > -np.inf)
+            em_res = trial.get("em_results", {})
+            em_ok = bool(em_res.get("log_likelihood", -np.inf) > -np.inf)
             em_success.append(int(em_ok))
-            if em_ok and 'n_iterations' in em_res:
-                em_iterations.append(int(em_res['n_iterations']))
+            if em_ok and "n_iterations" in em_res:
+                em_iterations.append(int(em_res["n_iterations"]))
 
-            ecm_res = trial.get('ecm_results', {})
-            ecm_ok = bool(ecm_res.get('log_likelihood', -np.inf) > -np.inf)
+            ecm_res = trial.get("ecm_results", {})
+            ecm_ok = bool(ecm_res.get("log_likelihood", -np.inf) > -np.inf)
             ecm_success.append(int(ecm_ok))
-            if ecm_ok and 'n_iterations' in ecm_res:
-                ecm_iterations.append(int(ecm_res['n_iterations']))
-
+            if ecm_ok and "n_iterations" in ecm_res:
+                ecm_iterations.append(int(ecm_res["n_iterations"]))
 
         # Export convergence comparison table to Excel
         self._export_convergence_table_to_excel(
-            slm_iterations,
+            slm_manifold_iterations,
             bcd_slm_iterations,
-            slm_joint_iterations,
+            slm_interior_iterations,
             slm_oracle_iterations,
             em_iterations,
             ecm_iterations,
             success_rates={
-                'SLM-Fixed': float(np.mean(slm_success)) if slm_success else 0.0,
-                'BCD-SLM': float(np.mean(bcd_slm_success)) if bcd_slm_success else 0.0,
-                'SLM-Joint': float(np.mean(slm_joint_success)) if slm_joint_success else 0.0,
-                'SLM-Oracle': float(np.mean(slm_oracle_success)) if slm_oracle_success else 0.0,
-                'EM': float(np.mean(em_success)) if em_success else 0.0,
-                'ECM': float(np.mean(ecm_success)) if ecm_success else 0.0,
+                "SLM-Manifold": float(np.mean(slm_manifold_success)) if slm_manifold_success else 0.0,
+                "BCD-SLM": float(np.mean(bcd_slm_success)) if bcd_slm_success else 0.0,
+                "SLM-Interior": float(np.mean(slm_interior_success)) if slm_interior_success else 0.0,
+                "SLM-Oracle": float(np.mean(slm_oracle_success)) if slm_oracle_success else 0.0,
+                "EM": float(np.mean(em_success)) if em_success else 0.0,
+                "ECM": float(np.mean(ecm_success)) if ecm_success else 0.0,
             },
         )
+
 
 
         
@@ -301,46 +330,56 @@ class PPLSVisualizer:
         if 'analysis' in experiment_results and 'summary_table' in experiment_results['analysis']:
             self._export_summary_table_to_excel(experiment_results['analysis']['summary_table'])
             
-    def _export_mse_to_excel(self, slm_metrics: Dict, bcd_metrics: Dict, em_metrics: Dict, ecm_metrics: Dict):
-        """Export MSE comparison to Excel file."""
+    def _export_mse_to_excel(
+        self,
+        slm_manifold_metrics: Dict,
+        bcd_metrics: Dict,
+        slm_interior_metrics: Dict,
+        em_metrics: Dict,
+        ecm_metrics: Dict,
+    ):
+        """Export MSE comparison to Excel file (Table 2-style summary)."""
 
-        params = ['W', 'C', 'B', 'Sigma_t', 'sigma_h2']
-        
+        params = ["W", "C", "B", "Sigma_t", "sigma_h2"]
+
         data = []
         for param in params:
-            key = f'mse_{param}'
+            key = f"mse_{param}"
             row = {
-                'Parameter': param,
-                'SLM_mean': slm_metrics.get(key, {}).get('mean', 0) * 100,
-                'SLM_std': slm_metrics.get(key, {}).get('std', 0) * 100,
-                'BCD_mean': bcd_metrics.get(key, {}).get('mean', 0) * 100,
-                'BCD_std': bcd_metrics.get(key, {}).get('std', 0) * 100,
-                'EM_mean': em_metrics.get(key, {}).get('mean', 0) * 100,
-                'EM_std': em_metrics.get(key, {}).get('std', 0) * 100,
-                'ECM_mean': ecm_metrics.get(key, {}).get('mean', 0) * 100,
-                'ECM_std': ecm_metrics.get(key, {}).get('std', 0) * 100
+                "Parameter": param,
+                "SLM-Manifold_mean": (slm_manifold_metrics.get(key, {}) or {}).get("mean", 0) * 100,
+                "SLM-Manifold_std": (slm_manifold_metrics.get(key, {}) or {}).get("std", 0) * 100,
+                "BCD-SLM_mean": (bcd_metrics.get(key, {}) or {}).get("mean", 0) * 100,
+                "BCD-SLM_std": (bcd_metrics.get(key, {}) or {}).get("std", 0) * 100,
+                "SLM-Interior_mean": (slm_interior_metrics.get(key, {}) or {}).get("mean", 0) * 100,
+                "SLM-Interior_std": (slm_interior_metrics.get(key, {}) or {}).get("std", 0) * 100,
+                "EM_mean": (em_metrics.get(key, {}) or {}).get("mean", 0) * 100,
+                "EM_std": (em_metrics.get(key, {}) or {}).get("std", 0) * 100,
+                "ECM_mean": (ecm_metrics.get(key, {}) or {}).get("mean", 0) * 100,
+                "ECM_std": (ecm_metrics.get(key, {}) or {}).get("std", 0) * 100,
             }
 
             data.append(row)
-            
+
         df = pd.DataFrame(data)
-        excel_path = os.path.join(self.figure_dir, 'Table_2_MSE_Comparison.xlsx')
-        
-        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='MSE_Comparison', index=False)
-            
+        excel_path = os.path.join(self.figure_dir, "Table_2_MSE_Comparison.xlsx")
+
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="MSE_Comparison", index=False)
+
             # Auto-adjust column widths
-            worksheet = writer.sheets['MSE_Comparison']
+            worksheet = writer.sheets["MSE_Comparison"]
             for column in df:
                 column_width = max(df[column].astype(str).map(len).max(), len(column))
                 col_idx = df.columns.get_loc(column)
                 worksheet.column_dimensions[chr(65 + col_idx)].width = column_width + 2
+
                 
     def _export_convergence_table_to_excel(
         self,
-        slm_iterations: List[int],
+        slm_manifold_iterations: List[int],
         bcd_slm_iterations: List[int],
-        slm_joint_iterations: List[int],
+        slm_interior_iterations: List[int],
         slm_oracle_iterations: List[int],
         em_iterations: List[int],
         ecm_iterations: List[int],
@@ -359,76 +398,83 @@ class PPLSVisualizer:
 
         # Calculate statistics for convergence comparison
         convergence_data = {
-            'Algorithm': ['SLM-Fixed', 'BCD-SLM', 'SLM-Joint', 'SLM-Oracle', 'EM', 'ECM'],
-            'Mean_Iterations': [
-                np.mean(slm_iterations) if slm_iterations else 0,
+            "Algorithm": [
+                "SLM-Manifold",
+                "BCD-SLM",
+                "SLM-Interior",
+                "SLM-Oracle",
+                "EM",
+                "ECM",
+            ],
+            "Mean_Iterations": [
+                np.mean(slm_manifold_iterations) if slm_manifold_iterations else 0,
                 np.mean(bcd_slm_iterations) if bcd_slm_iterations else 0,
-                np.mean(slm_joint_iterations) if slm_joint_iterations else 0,
+                np.mean(slm_interior_iterations) if slm_interior_iterations else 0,
                 np.mean(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.mean(em_iterations) if em_iterations else 0,
                 np.mean(ecm_iterations) if ecm_iterations else 0,
             ],
-            'Std_Iterations': [
-                np.std(slm_iterations) if slm_iterations else 0,
+            "Std_Iterations": [
+                np.std(slm_manifold_iterations) if slm_manifold_iterations else 0,
                 np.std(bcd_slm_iterations) if bcd_slm_iterations else 0,
-                np.std(slm_joint_iterations) if slm_joint_iterations else 0,
+                np.std(slm_interior_iterations) if slm_interior_iterations else 0,
                 np.std(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.std(em_iterations) if em_iterations else 0,
                 np.std(ecm_iterations) if ecm_iterations else 0,
             ],
-            'Min_Iterations': [
-                np.min(slm_iterations) if slm_iterations else 0,
+            "Min_Iterations": [
+                np.min(slm_manifold_iterations) if slm_manifold_iterations else 0,
                 np.min(bcd_slm_iterations) if bcd_slm_iterations else 0,
-                np.min(slm_joint_iterations) if slm_joint_iterations else 0,
+                np.min(slm_interior_iterations) if slm_interior_iterations else 0,
                 np.min(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.min(em_iterations) if em_iterations else 0,
                 np.min(ecm_iterations) if ecm_iterations else 0,
             ],
-            'Max_Iterations': [
-                np.max(slm_iterations) if slm_iterations else 0,
+            "Max_Iterations": [
+                np.max(slm_manifold_iterations) if slm_manifold_iterations else 0,
                 np.max(bcd_slm_iterations) if bcd_slm_iterations else 0,
-                np.max(slm_joint_iterations) if slm_joint_iterations else 0,
+                np.max(slm_interior_iterations) if slm_interior_iterations else 0,
                 np.max(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.max(em_iterations) if em_iterations else 0,
                 np.max(ecm_iterations) if ecm_iterations else 0,
             ],
-            'Median_Iterations': [
-                np.median(slm_iterations) if slm_iterations else 0,
+            "Median_Iterations": [
+                np.median(slm_manifold_iterations) if slm_manifold_iterations else 0,
                 np.median(bcd_slm_iterations) if bcd_slm_iterations else 0,
-                np.median(slm_joint_iterations) if slm_joint_iterations else 0,
+                np.median(slm_interior_iterations) if slm_interior_iterations else 0,
                 np.median(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.median(em_iterations) if em_iterations else 0,
                 np.median(ecm_iterations) if ecm_iterations else 0,
             ],
-            'Success_Rate': [
-                _sr('SLM-Fixed'),
-                _sr('BCD-SLM'),
-                _sr('SLM-Joint'),
-                _sr('SLM-Oracle'),
-                _sr('EM'),
-                _sr('ECM'),
+            "Success_Rate": [
+                _sr("SLM-Manifold"),
+                _sr("BCD-SLM"),
+                _sr("SLM-Interior"),
+                _sr("SLM-Oracle"),
+                _sr("EM"),
+                _sr("ECM"),
             ],
         }
 
-        
         df_convergence = pd.DataFrame(convergence_data)
-        
+
         # Format the dataframe for better presentation
-        df_convergence['Mean_Iterations'] = df_convergence['Mean_Iterations'].round(1)
-        df_convergence['Std_Iterations'] = df_convergence['Std_Iterations'].round(1)
-        df_convergence['Median_Iterations'] = df_convergence['Median_Iterations'].round(1)
-        
-        excel_path = os.path.join(self.figure_dir, 'Table_3_Convergence_Comparison.xlsx')
-        
-        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            df_convergence.to_excel(writer, sheet_name='Convergence_Statistics', index=False)
-            
+        df_convergence["Mean_Iterations"] = df_convergence["Mean_Iterations"].round(1)
+        df_convergence["Std_Iterations"] = df_convergence["Std_Iterations"].round(1)
+        df_convergence["Median_Iterations"] = df_convergence["Median_Iterations"].round(1)
+
+        excel_path = os.path.join(self.figure_dir, "Table_3_Convergence_Comparison.xlsx")
+
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            df_convergence.to_excel(writer, sheet_name="Convergence_Statistics", index=False)
+
             # Auto-adjust column widths
-            worksheet = writer.sheets['Convergence_Statistics']
+            worksheet = writer.sheets["Convergence_Statistics"]
             for column in df_convergence:
                 column_width = max(df_convergence[column].astype(str).map(len).max(), len(column))
                 col_idx = df_convergence.columns.get_loc(column)
                 worksheet.column_dimensions[chr(65 + col_idx)].width = column_width + 2
+
             
     def _export_full_results_to_excel(self, experiment_results: Dict):
         """Export comprehensive results to Excel workbook."""
@@ -515,6 +561,7 @@ class LoadingPlotter:
         component_idx: int = 0,
         *,
         W_bcd: Optional[np.ndarray] = None,
+        W_slm_interior: Optional[np.ndarray] = None,
         W_slm_oracle: Optional[np.ndarray] = None,
     ) -> plt.Figure:
         """
@@ -544,6 +591,10 @@ class LoadingPlotter:
         if isinstance(W_bcd, np.ndarray) and W_bcd.size > 0:
             w_bcd = W_bcd[:, component_idx]
 
+        w_interior = None
+        if isinstance(W_slm_interior, np.ndarray) and W_slm_interior.size > 0:
+            w_interior = W_slm_interior[:, component_idx]
+
         w_oracle = None
         if isinstance(W_slm_oracle, np.ndarray) and W_slm_oracle.size > 0:
             w_oracle = W_slm_oracle[:, component_idx]
@@ -559,6 +610,12 @@ class LoadingPlotter:
             try:
                 if np.corrcoef(w_bcd, w_true)[0, 1] < 0:
                     w_bcd = -w_bcd
+            except Exception:
+                pass
+        if w_interior is not None:
+            try:
+                if np.corrcoef(w_interior, w_true)[0, 1] < 0:
+                    w_interior = -w_interior
             except Exception:
                 pass
         try:
@@ -607,13 +664,13 @@ class LoadingPlotter:
         ax.plot(
             x,
             w_slm,
-            color="#2E7D32",
-            linestyle="--",
-            linewidth=2.6,
+            color="#1565C0",
+            linestyle="-",
+            linewidth=2.8,
             marker="s",
-            markerfacecolor="#2E7D32",
+            markerfacecolor="#1565C0",
             markeredgecolor="black",
-            label="SLM",
+            label=display_name("slm_manifold"),
             zorder=5,
             **common,
         )
@@ -621,29 +678,43 @@ class LoadingPlotter:
             ax.plot(
                 x,
                 w_bcd,
-                color="#00897B",
-                linestyle="-.",
+                color="#1565C0",
+                linestyle="--",
                 linewidth=2.4,
                 marker="P",
-                markerfacecolor="#00897B",
+                markerfacecolor="#1565C0",
                 markeredgecolor="black",
-                label="BCD-SLM",
+                label=display_name("bcd_slm"),
                 zorder=4.5,
                 **common,
             )
-        if w_oracle is not None:
+        if w_interior is not None:
+            ax.plot(
+                x,
+                w_interior,
+                color="#EF6C00",
+                linestyle="-",
+                linewidth=2.6,
+                marker="^",
+                markerfacecolor="#EF6C00",
+                markeredgecolor="black",
+                label=display_name("slm_interior"),
+                zorder=4.25,
+                **common,
+            )
 
+        if w_oracle is not None:
             ax.plot(
                 x,
                 w_oracle,
-                color="#6A1B9A",
-                linestyle="-",
-                linewidth=2.4,
+                color="#757575",
+                linestyle="--",
+                linewidth=2.2,
                 marker="*",
                 markersize=10,
-                markerfacecolor="#6A1B9A",
+                markerfacecolor="#757575",
                 markeredgecolor="black",
-                label="SLM-Oracle",
+                label=display_name("slm_oracle"),
                 zorder=4,
                 alpha=0.98,
                 markevery=1,
@@ -665,13 +736,13 @@ class LoadingPlotter:
         ax.plot(
             x,
             w_ecm,
-            color="#1565C0",
+            color="#2E7D32",
             linestyle="-.",
             linewidth=2.4,
             marker="D",
-            markerfacecolor="#1565C0",
+            markerfacecolor="#2E7D32",
             markeredgecolor="black",
-            label="ECM",
+            label=display_name("ecm"),
             zorder=2,
             **common,
         )
@@ -702,6 +773,7 @@ class LoadingPlotter:
         component_idx: int = 0,
         *,
         C_bcd: Optional[np.ndarray] = None,
+        C_slm_interior: Optional[np.ndarray] = None,
         C_slm_oracle: Optional[np.ndarray] = None,
     ) -> plt.Figure:
         """
@@ -731,6 +803,10 @@ class LoadingPlotter:
         if isinstance(C_bcd, np.ndarray) and C_bcd.size > 0:
             c_bcd = C_bcd[:, component_idx]
 
+        c_interior = None
+        if isinstance(C_slm_interior, np.ndarray) and C_slm_interior.size > 0:
+            c_interior = C_slm_interior[:, component_idx]
+
         c_oracle = None
         if isinstance(C_slm_oracle, np.ndarray) and C_slm_oracle.size > 0:
             c_oracle = C_slm_oracle[:, component_idx]
@@ -746,6 +822,12 @@ class LoadingPlotter:
             try:
                 if np.corrcoef(c_bcd, c_true)[0, 1] < 0:
                     c_bcd = -c_bcd
+            except Exception:
+                pass
+        if c_interior is not None:
+            try:
+                if np.corrcoef(c_interior, c_true)[0, 1] < 0:
+                    c_interior = -c_interior
             except Exception:
                 pass
         try:
@@ -794,13 +876,13 @@ class LoadingPlotter:
         ax.plot(
             x,
             c_slm,
-            color="#2E7D32",
-            linestyle="--",
-            linewidth=2.6,
+            color="#1565C0",
+            linestyle="-",
+            linewidth=2.8,
             marker="s",
-            markerfacecolor="#2E7D32",
+            markerfacecolor="#1565C0",
             markeredgecolor="black",
-            label="SLM",
+            label=display_name("slm_manifold"),
             zorder=5,
             **common,
         )
@@ -808,13 +890,13 @@ class LoadingPlotter:
             ax.plot(
                 x,
                 c_bcd,
-                color="#00897B",
-                linestyle="-.",
+                color="#1565C0",
+                linestyle="--",
                 linewidth=2.4,
                 marker="P",
-                markerfacecolor="#00897B",
+                markerfacecolor="#1565C0",
                 markeredgecolor="black",
-                label="BCD-SLM",
+                label=display_name("bcd_slm"),
                 zorder=4.5,
                 **common,
             )
@@ -1003,71 +1085,98 @@ class PerformancePlotter:
     Visualization of algorithm performance metrics.
     """
     
-    def plot_mse_bars(self, slm_metrics: Dict, bcd_metrics: Dict, em_metrics: Dict, 
-                     ecm_metrics: Dict) -> plt.Figure:
-        """
-        Create publication-ready bar plot comparing MSE across methods.
-        
-        Parameters:
-        -----------
-        slm_metrics : dict
-            SLM performance metrics
-        em_metrics : dict
-            EM performance metrics
-        ecm_metrics : dict
-            ECM performance metrics
-            
-        Returns:
-        --------
-        fig : plt.Figure
-            Figure object
+    def plot_mse_bars(self, metrics_by_method: Dict[str, Dict]) -> plt.Figure:
+        """Create publication-ready bar plot comparing MSE across methods.
+
+        Parameters
+        ----------
+        metrics_by_method : dict
+            Mapping from method key (e.g. "slm_manifold") to aggregated MSE metrics
+            as produced by `PPLSExperiment.analyze_results`.
         """
         fig, ax = plt.subplots(figsize=(8, 5))
-        
-        params = ['W', 'C', 'B', 'Sigma_t', 'sigma_h2']
-        param_labels = ['$\\mathbf{W}$', '$\\mathbf{C}$', '$\\mathbf{B}$', 
-                       '$\\mathbf{\\Sigma}_t$', '$\\sigma_h^2$']
-        
-        x = np.arange(len(params))
-        width = 0.20
-        
-        # Extract MSE values and multiply by 100 for readability
-        slm_mse = [slm_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
-        bcd_mse = [bcd_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
-        em_mse = [em_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
-        ecm_mse = [ecm_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
-        
-        # Create bars
-        bars1 = ax.bar(x - 1.5 * width, slm_mse, width, label='SLM-Fixed',
-                      color='#2E7D32', alpha=0.8, edgecolor='black', linewidth=1)
-        bars2 = ax.bar(x - 0.5 * width, bcd_mse, width, label='BCD-SLM',
-                      color='#00897B', alpha=0.8, edgecolor='black', linewidth=1)
-        bars3 = ax.bar(x + 0.5 * width, em_mse, width, label='EM',
-                      color='#C62828', alpha=0.8, edgecolor='black', linewidth=1)
-        bars4 = ax.bar(x + 1.5 * width, ecm_mse, width, label='ECM',
-                      color='#1565C0', alpha=0.8, edgecolor='black', linewidth=1)
-        
-        # Add value labels on bars
-        for bars in [bars1, bars2, bars3, bars4]:
 
+        params = ["W", "C", "B", "Sigma_t", "sigma_h2"]
+        param_labels = [
+            "$\\mathbf{W}$",
+            "$\\mathbf{C}$",
+            "$\\mathbf{B}$",
+            "$\\mathbf{\\Sigma}_t$",
+            "$\\sigma_h^2$",
+        ]
+
+        x = np.arange(len(params))
+        width = 0.16
+
+        method_order = [
+            "slm_manifold",
+            "bcd_slm",
+            "slm_interior",
+            "em",
+            "ecm",
+        ]
+        colors = {
+            "slm_manifold": "#1565C0",  # blue (main SLM)
+            "bcd_slm": "#1565C0",       # blue dashed-style via hatch
+            "slm_interior": "#EF6C00",  # orange
+            "em": "#C62828",            # red
+            "ecm": "#2E7D32",           # green
+        }
+        hatches = {
+            "slm_manifold": None,
+            "bcd_slm": "///",
+            "slm_interior": None,
+            "em": None,
+            "ecm": None,
+        }
+
+        bars_by_method = {}
+        offsets = np.linspace(-2, 2, num=len(method_order)) * width / 1.3
+
+        for offset, method in zip(offsets, method_order):
+            metrics = metrics_by_method.get(method, {}) or {}
+            mse_values = [
+                (metrics.get(f"mse_{p}", {}) or {}).get("mean", 0.0) * 100 for p in params
+            ]
+            bars = ax.bar(
+                x + offset,
+                mse_values,
+                width,
+                label=display_name(method),
+                color=colors.get(method, "#9E9E9E"),
+                alpha=0.85,
+                edgecolor="black",
+                linewidth=1,
+                hatch=hatches.get(method),
+            )
+            bars_by_method[method] = bars
+
+        # Add value labels on bars
+        for bars in bars_by_method.values():
             for bar in bars:
                 height = bar.get_height()
                 if height > 0:
-                    ax.text(bar.get_x() + bar.get_width()/2., height,
-                           f'{height:.2f}',
-                           ha='center', va='bottom', fontsize=8)
-        
-        ax.set_xlabel('Parameter', fontweight='bold')
-        ax.set_ylabel('MSE ($\\times 10^{-2}$)', fontweight='bold')
-        ax.set_title('Mean Squared Error Comparison', fontweight='bold')
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2.0,
+                        height,
+                        f"{height:.2f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                    )
+
+        ax.set_xlabel("Parameter", fontweight="bold")
+        ax.set_ylabel("MSE ($\\times 10^{-2}$)", fontweight="bold")
+        ax.set_title("Mean Squared Error Comparison", fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels(param_labels)
-        ax.legend(loc='upper right', frameon=True)
-        ax.grid(axis='y', alpha=0.3)
+        ax.legend(loc="upper right", frameon=True)
+        ax.grid(axis="y", alpha=0.3)
         ax.set_axisbelow(True)
-        
+
         plt.tight_layout()
         return fig
+
     
     def plot_mse_comparison(self, slm_metrics: Dict, em_metrics: Dict, 
                            ecm_metrics: Dict) -> plt.Figure:

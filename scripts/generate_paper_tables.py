@@ -98,8 +98,9 @@ def generate_convergence_table(*, artifacts_dir: Path, out_path: Path) -> None:
         raise ValueError(f"Unexpected convergence sheet columns; missing={sorted(missing)}")
 
     # Normalise algorithm names to match current Monte Carlo outputs.
-    # (We now report SLM-Fixed / SLM-Joint / SLM-Oracle explicitly.)
-    order = ["SLM-Fixed", "BCD-SLM", "SLM-Joint", "SLM-Oracle", "EM", "ECM"]
+    # (We now report SLM-Manifold / SLM-Interior / SLM-Oracle explicitly.)
+    order = ["SLM-Manifold", "BCD-SLM", "SLM-Interior", "SLM-Oracle", "EM", "ECM"]
+
 
 
 
@@ -170,13 +171,14 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
     high = _read_json(artifacts_dir / "simulation" / "mse_table_high.json")
 
     methods = [
-        ("slm", "SLM-Fixed"),
+        ("slm_manifold", "SLM-Manifold"),
         ("bcd_slm", "BCD-SLM"),
-        ("slm_joint", "SLM-Joint"),
+        ("slm_interior", "SLM-Interior"),
         ("slm_oracle", "SLM-Oracle"),
         ("em", "EM"),
         ("ecm", "ECM"),
     ]
+
 
 
 
@@ -238,7 +240,12 @@ def generate_parameter_recovery_scale_table(*, artifacts_dir: Path, out_path: Pa
     if df.empty:
         raise ValueError(f"No rows found for noise='{noise}' in {path}")
 
-    method_order = ["SLM-Fixed", "BCD-SLM", "SLM-Oracle", "EM", "ECM"]
+    # Backward compatibility: map legacy "SLM-Fixed" label to "SLM-Manifold" in scale summaries.
+    df["method_display"] = df["method_display"].replace({"SLM-Fixed": "SLM-Manifold"})
+
+    method_order = ["SLM-Manifold", "BCD-SLM", "SLM-Interior", "SLM-Oracle", "EM", "ECM"]
+
+
 
     metric_cols = [
         ("mse_W_table_str_x1e2", r"$\text{MSE}_W$"),
@@ -274,7 +281,10 @@ def generate_parameter_recovery_scale_table(*, artifacts_dir: Path, out_path: Pa
         r = int(cfg["r"].iloc[0])
         n_samples = int(cfg["n_samples"].iloc[0])
         for method in method_order:
+            if method not in cfg.index:
+                continue
             row = cfg.loc[method]
+
             cfg_cell = f"C{config_id}" if first_row else ""
             dim_cell = rf"$({p},{q},{r})$" if first_row else ""
             n_cell = str(n_samples) if first_row else ""
@@ -300,16 +310,20 @@ def generate_parameter_recovery_scale_runtime_table(*, artifacts_dir: Path, out_
     if not (summary_path.exists() and runtime_path.exists() and manifest_path.exists()):
         raise FileNotFoundError(f"missing: {summary_path}, {runtime_path}, or {manifest_path}")
 
-    summary_df = pd.read_csv(summary_path)
+    summary_df = pd.read_csv(summary_path).copy()
     runtime_df = pd.read_csv(runtime_path)
     manifest = _read_json(manifest_path)
 
+    summary_df["method_display"] = summary_df["method_display"].replace({"SLM-Fixed": "SLM-Manifold"})
     runtime_pivot = runtime_df.pivot(index="config_id", columns="noise", values="condition_runtime_min")
     method_pivot = summary_df.groupby(["config_id", "method_display"])["avg_runtime_sec"].mean().unstack()
 
     total_minutes = float(manifest.get("elapsed_sec", 0.0)) / 60.0
+    method_cols = ["SLM-Manifold", "BCD-SLM", "SLM-Oracle", "EM", "ECM"]
+
 
     tex: list[str] = []
+
     tex.append(r"\setlength{\tabcolsep}{3pt}")
     tex.append(r"\begin{table}[t]\scriptsize")
     tex.append(r"\centering")
@@ -320,7 +334,7 @@ def generate_parameter_recovery_scale_runtime_table(*, artifacts_dir: Path, out_
     tex.append(r"\begin{tabular}{ccccccccc}")
 
     tex.append(r"\toprule")
-    tex.append(r"Cfg & $N$ & Low min & High min & SLM-Fixed & BCD-SLM & SLM-Oracle & EM & ECM \\")
+    tex.append(r"Cfg & $N$ & Low min & High min & SLM-Manifold & BCD-SLM & SLM-Oracle & EM & ECM \\")
 
     tex.append(r"\midrule")
 
@@ -329,9 +343,19 @@ def generate_parameter_recovery_scale_runtime_table(*, artifacts_dir: Path, out_
         n_samples = int(cfg_rows["n_samples"].iloc[0])
         low_min = float(runtime_pivot.loc[config_id, "low"])
         high_min = float(runtime_pivot.loc[config_id, "high"])
-        method_means = method_pivot.loc[config_id]
+        means_row = method_pivot.loc[int(config_id)] if int(config_id) in method_pivot.index else pd.Series(dtype=float)
+
+        runtime_cells: list[str] = []
+        for method_name in method_cols:
+            try:
+                value = float(means_row.get(method_name, float("nan")))
+            except Exception:
+                value = float("nan")
+            runtime_cells.append(f"{value:.2f}")
+
         tex.append(
-            f"C{config_id} & {n_samples} & {low_min:.2f} & {high_min:.2f} & {float(method_means['SLM-Fixed']):.2f} & {float(method_means['BCD-SLM']):.2f} & {float(method_means['SLM-Oracle']):.2f} & {float(method_means['EM']):.2f} & {float(method_means['ECM']):.2f} \\\\\\\\" 
+
+            f"C{config_id} & {n_samples} & {low_min:.2f} & {high_min:.2f} & " + " & ".join(runtime_cells) + r" \\\\\\\\" 
 
         )
 
@@ -1158,7 +1182,8 @@ def generate_paper_metrics(*, artifacts_dir: Path, out_path: Path) -> None:
         return sub.iloc[0]
 
     # Keep macro names stable in LaTeX, but source values from the fixed-noise SLM row.
-    r_slm = _get_row("SLM-Fixed")
+    r_slm = _get_row("SLM-Manifold")
+
 
     r_em = _get_row("EM")
     r_ecm = _get_row("ECM")
@@ -1193,7 +1218,8 @@ def generate_paper_metrics(*, artifacts_dir: Path, out_path: Path) -> None:
     def mse_mean(data: Dict[str, Any], method: str, key: str) -> float:
         return mean_x1e2(data[method][key]["table_str_x1e2"])
 
-    methods = ["slm", "em", "ecm"]
+    methods = ["slm_manifold", "em", "ecm"]
+
 
     # Low-noise range used in prose for W/C together.
     low_wc = [mse_mean(low, m, k) for m in methods for k in ("W", "C")]
@@ -1209,10 +1235,11 @@ def generate_paper_metrics(*, artifacts_dir: Path, out_path: Path) -> None:
     low_b_emecm = [mse_mean(low, m, "B") for m in ("em", "ecm")]
 
     # High-noise specific mentions.
-    high_w_slm = mse_mean(high, "slm", "W")
-    high_c_slm = mse_mean(high, "slm", "C")
+    high_w_slm = mse_mean(high, "slm_manifold", "W")
+    high_c_slm = mse_mean(high, "slm_manifold", "C")
     high_sigmah_emecm = [mse_mean(high, m, "sigma_h2") for m in ("em", "ecm")]
-    high_sigmah_slm = mse_mean(high, "slm", "sigma_h2")
+    high_sigmah_slm = mse_mean(high, "slm_manifold", "sigma_h2")
+
 
     # --- Association overlap counts ---
     det = pd.read_csv(artifacts_dir / "association" / "detection_table.csv")
@@ -1253,9 +1280,24 @@ def generate_paper_metrics(*, artifacts_dir: Path, out_path: Path) -> None:
     lines.append(r"\providecommand{\MSESigmaTLowEMECMMin}{" + f1(min(low_sigmat_emecm)) + "}")
     lines.append(r"\providecommand{\MSESigmaTLowEMECMMax}{" + f1(max(low_sigmat_emecm)) + "}")
     lines.append(r"\providecommand{\MSESigmaHLowEMECM}{" + f2(min(low_sigmah_emecm)) + "}")
-    lines.append(r"\providecommand{\MSESigmaTLowSLM}{" + f1(mse_mean(low, "slm", "Sigma_t")) + "}")
-    lines.append(r"\providecommand{\MSESigmaHLowSLM}{" + f2(mse_mean(low, "slm", "sigma_h2")) + "}")
-    lines.append(r"\providecommand{\MSEBLowSLM}{" + f2(mse_mean(low, "slm", "B")) + "}")
+    lines.append(r"\providecommand{\MSESigmaTLowSLM}{" + f1(mse_mean(low, "slm_manifold", "Sigma_t")) + "}")
+    lines.append(r"\providecommand{\MSESigmaHLowSLM}{" + f2(mse_mean(low, "slm_manifold", "sigma_h2")) + "}")
+    lines.append(r"\providecommand{\MSEBLowSLM}{" + f2(mse_mean(low, "slm_manifold", "B")) + "}")
+
+    # Additional macros for SLM-Interior (low/high noise, used in ablation text)
+    lines.append(r"\providecommand{\MSEWLowSLMInterior}{" + f2(mse_mean(low, "slm_interior", "W")) + "}")
+    lines.append(r"\providecommand{\MSECLowSLMInterior}{" + f2(mse_mean(low, "slm_interior", "C")) + "}")
+    lines.append(r"\providecommand{\MSEBLowSLMInterior}{" + f2(mse_mean(low, "slm_interior", "B")) + "}")
+    lines.append(r"\providecommand{\MSESigmaTLowSLMInterior}{" + f2(mse_mean(low, "slm_interior", "Sigma_t")) + "}")
+    lines.append(r"\providecommand{\MSESigmaHLowSLMInterior}{" + f2(mse_mean(low, "slm_interior", "sigma_h2")) + "}")
+
+    lines.append(r"\providecommand{\MSEWHighSLMInterior}{" + f2(mse_mean(high, "slm_interior", "W")) + "}")
+    lines.append(r"\providecommand{\MSECHighSLMInterior}{" + f2(mse_mean(high, "slm_interior", "C")) + "}")
+
+    lines.append(r"\providecommand{\MSEBHighSLMInterior}{" + f2(mse_mean(high, "slm_interior", "B")) + "}")
+    lines.append(r"\providecommand{\MSESigmaTHighSLMInterior}{" + f2(mse_mean(high, "slm_interior", "Sigma_t")) + "}")
+    lines.append(r"\providecommand{\MSESigmaHHighSLMInterior}{" + f2(mse_mean(high, "slm_interior", "sigma_h2")) + "}")
+
     lines.append(r"\providecommand{\MSEBLowEMECMMin}{" + f2(min(low_b_emecm)) + "}")
     lines.append(r"\providecommand{\MSEBLowEMECMMax}{" + f2(max(low_b_emecm)) + "}")
 

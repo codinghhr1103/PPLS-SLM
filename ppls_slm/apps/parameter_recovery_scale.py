@@ -32,10 +32,11 @@ from ppls_slm.experiment_config import ConfigError, load_config
 from ppls_slm.utils import ensure_dir, repo_root, setup_logging
 
 
-METHOD_ORDER = ["slm_fixed", "bcd_slm", "slm_oracle", "em", "ecm"]
+METHOD_ORDER = ["slm_manifold", "bcd_slm", "slm_interior", "slm_oracle", "em", "ecm"]
 METHOD_DISPLAY = {
-    "slm_fixed": "SLM-Fixed",
+    "slm_manifold": "SLM-Manifold",
     "bcd_slm": "BCD-SLM",
+    "slm_interior": "SLM-Interior",
     "slm_oracle": "SLM-Oracle",
     "em": "EM",
     "ecm": "ECM",
@@ -138,8 +139,13 @@ def _slm_kwargs(exp_cfg: Dict[str, Any], *, oracle: bool, true_params: Dict[str,
 def _instantiate_methods(condition: Dict[str, Any], true_params: Dict[str, Any]) -> Dict[str, Any]:
     common = {"p": int(condition["p"]), "q": int(condition["q"]), "r": int(condition["r"])}
     exp_cfg = condition["experiment_cfg"]
+
+    slm_manifold_kwargs = _slm_kwargs(exp_cfg, oracle=False, true_params=true_params)
+    slm_interior_kwargs = dict(slm_manifold_kwargs)
+    slm_interior_kwargs["optimizer"] = "trust-constr"
+
     return {
-        "slm_fixed": ScalarLikelihoodMethod(**common, **_slm_kwargs(exp_cfg, oracle=False, true_params=true_params)),
+        "slm_manifold": ScalarLikelihoodMethod(**common, **slm_manifold_kwargs),
         "bcd_slm": BCDScalarLikelihoodMethod(
             **common,
             max_outer_iter=int(exp_cfg["max_iter"]),
@@ -148,9 +154,9 @@ def _instantiate_methods(condition: Dict[str, Any], true_params: Dict[str, Any])
             tolerance=float(exp_cfg.get("bcd_tolerance", exp_cfg.get("slm_gtol", 5e-3))),
             use_noise_preestimation=True,
         ),
+        "slm_interior": ScalarLikelihoodMethod(**common, **slm_interior_kwargs),
         "slm_oracle": ScalarLikelihoodMethod(**common, **_slm_kwargs(exp_cfg, oracle=True, true_params=true_params)),
         "em": EMAlgorithm(
-
             **common,
             max_iter=int(exp_cfg["max_iter"]),
             tolerance=float(exp_cfg.get("em_tolerance", 5e-3)),

@@ -40,8 +40,12 @@ _DEFAULTS: Dict = {
     },
     "algorithms": {
         "common": {"n_starts": 8, "random_seed": 42},
-        # Fixed-noise SLM (spectral pre-estimation), as used in the paper.
-        "slm": {
+        "slm_manifold": {
+            "optimizer": "manifold",
+            "max_iter": 2000,
+            "use_noise_preestimation": True,
+        },
+        "slm_interior": {
             "optimizer": "trust-constr",
             "max_iter": 2000,
             "use_noise_preestimation": True,
@@ -50,34 +54,12 @@ _DEFAULTS: Dict = {
             "barrier_tol": 0.005,
             "constraint_slack": 0.005,
         },
-        # Exact-feasible manifold variant (optional)
-        "slm_manifold": {
-            "optimizer": "manifold",
-            "max_iter": 2000,
-            "use_noise_preestimation": True,
-            "gtol": 0.005,
-            "xtol": 0.005,
-            "barrier_tol": 0.005,
-            "constraint_slack": 0.005,
-        },
-        # BCD-SLM (paper Algorithm 1)
         "bcd_slm": {
             "max_outer_iter": 200,
             "n_cg_steps_W": 5,
             "n_cg_steps_C": 5,
             "tolerance": 1e-4,
             "use_noise_preestimation": True,
-        },
-        # Diagnostics: joint-noise variant
-
-        "slm_joint": {
-            "optimizer": "trust-constr",
-            "max_iter": 2000,
-            "use_noise_preestimation": True,
-            "gtol": 0.005,
-            "xtol": 0.005,
-            "barrier_tol": 0.005,
-            "constraint_slack": 0.005,
         },
         "em": {"max_iter": 2000, "tolerance": 0.005},
         "ecm": {"max_iter": 2000, "tolerance": 0.005},
@@ -308,7 +290,7 @@ def run_parameter_estimation_stage(config: Dict, base_dir: str) -> bool:
     def _extract_mse_table_from_results(experiment_results: Dict) -> Dict:
         analysis = experiment_results.get("analysis", {})
         params = ["W", "C", "B", "Sigma_t", "sigma_h2", "sigma_e2", "sigma_f2"]
-        methods = ["slm", "bcd_slm", "slm_joint", "slm_oracle", "em", "ecm"]
+        methods = ["slm_manifold", "bcd_slm", "slm_interior", "slm_oracle", "em", "ecm"]
 
 
         table: Dict = {}
@@ -436,13 +418,17 @@ def run_parameter_estimation_stage(config: Dict, base_dir: str) -> bool:
         if "analysis" in results and "runtime_statistics" in results["analysis"]:
             runtime_stats = results["analysis"]["runtime_statistics"]
             readable_summary["algorithm_performance"] = {
-                "slm": {
-                    "avg_runtime_seconds": round(runtime_stats.get("slm", {}).get("avg_runtime", 0), 2),
-                    "avg_convergence_rate_percent": round(runtime_stats.get("slm", {}).get("avg_convergence_rate", 0) * 100, 1),
+                "slm_manifold": {
+                    "avg_runtime_seconds": round(runtime_stats.get("slm_manifold", {}).get("avg_runtime", 0), 2),
+                    "avg_convergence_rate_percent": round(runtime_stats.get("slm_manifold", {}).get("avg_convergence_rate", 0) * 100, 1),
                 },
                 "bcd_slm": {
                     "avg_runtime_seconds": round(runtime_stats.get("bcd_slm", {}).get("avg_runtime", 0), 2),
                     "avg_convergence_rate_percent": round(runtime_stats.get("bcd_slm", {}).get("avg_convergence_rate", 0) * 100, 1),
+                },
+                "slm_interior": {
+                    "avg_runtime_seconds": round(runtime_stats.get("slm_interior", {}).get("avg_runtime", 0), 2),
+                    "avg_convergence_rate_percent": round(runtime_stats.get("slm_interior", {}).get("avg_convergence_rate", 0) * 100, 1),
                 },
                 "slm_oracle": {
                     "avg_runtime_seconds": round(runtime_stats.get("slm_oracle", {}).get("avg_runtime", 0), 2),
@@ -459,7 +445,7 @@ def run_parameter_estimation_stage(config: Dict, base_dir: str) -> bool:
             }
 
         if "analysis" in results:
-            for method in ["slm", "bcd_slm", "slm_joint", "slm_oracle", "em", "ecm"]:
+            for method in ["slm_manifold", "bcd_slm", "slm_interior", "slm_oracle", "em", "ecm"]:
 
                 if method in results["analysis"]:
                     method_quality: Dict[str, float] = {}
