@@ -29,15 +29,6 @@
       "random_seed": 42
     },
     "slm": {
-      "optimizer": "trust-constr",
-      "max_iter": 2000,
-      "use_noise_preestimation": true,
-      "gtol": 0.005,
-      "xtol": 0.005,
-      "barrier_tol": 0.005,
-      "constraint_slack": 0.005
-    },
-    "slm_manifold": {
       "optimizer": "manifold",
       "max_iter": 2000,
       "use_noise_preestimation": true,
@@ -46,6 +37,8 @@
       "barrier_tol": 0.005,
       "constraint_slack": 0.005
     },
+    "slm_manifold": {},
+
     "em": {
 
       "max_iter": 2000,

@@ -1,34 +1,35 @@
-"""SLM-Manifold: Riemannian optimization on Stiefel manifolds.
+"""SLM-Manifold: exact-feasible optimization on the PPLS product manifold.
 
 This module provides a drop-in optimizer for the Scalar Likelihood Method (SLM)
 that maintains exact orthonormality constraints
 
     W^T W = I_r,   C^T C = I_r
 
-by optimizing directly on the product manifold
+by optimizing on the product manifold
 
-    St(p, r) × St(q, r) × R_+^r × R_+^r × R_+
+    St(p, r) × St(q, r) × R^r × R^r × R
 
-where the positive factors correspond to
+using a log-parameterization for positive diagonal/scalar parameters:
 
-    theta_t2 = diag(Sigma_t)   (latent variances)
-    b        = diag(B)         (regression coefficients)
-    sigma_h2                  (latent noise)
+    theta_t2 = exp(theta_t2_tilde)   (latent variances)
+    b        = exp(b_tilde)          (regression coefficients)
+    sigma_h2 = exp(sigma_h2_tilde)   (latent noise)
 
-Noise variances (sigma_e2, sigma_f2) are assumed fixed (pre-estimated) exactly
-as in the paper's default SLM.
+This matches the paper's default protocol (positivity via log-coordinates) while
+keeping (sigma_e2, sigma_f2) fixed at spectral pre-estimates.
 
 Implementation notes
 --------------------
 - Uses Pymanopt if available.
-- Supplies an analytic Euclidean gradient (Eqs. (20)-(21) for W,C plus analytic
-  derivatives for (theta_t2, b, sigma_h2)).
-- Includes a post-processing step to enforce the identifiability ordering
+- Uses sign-consistent thin-QR retraction (diag(R) > 0) on Stiefel factors.
+- Supplies analytic Euclidean gradients and applies the log-coordinate chain rule.
+- Includes a post-processing step to enforce identifiability ordering
   (theta_t2[i] * b[i]) decreasing by permuting latent components.
 
 If Pymanopt is not installed, importing/using this module will raise an
 ImportError with instructions.
 """
+
 
 from __future__ import annotations
 
@@ -205,12 +206,19 @@ def solve_slm_manifold_single_start(
 
     try:
         from pymanopt import Problem, function
-        from pymanopt.manifolds import Product, Positive, Stiefel
+        from pymanopt.manifolds import Euclidean, Product, Stiefel
         from pymanopt.optimizers import ConjugateGradient
     except Exception as e:  # pragma: no cover
         raise ImportError(
             "SLM-Manifold requires 'pymanopt'. Install via: pip install pymanopt"
         ) from e
+
+    class _StiefelQF(Stiefel):
+        """Stiefel manifold with sign-consistent thin-QR retraction (diag(R) > 0)."""
+
+        def retraction(self, point, tangent_vector):  # type: ignore[override]
+            return _qr_with_positive_diagonal(point + tangent_vector)
+
 
     p, q, r = int(objective.p), int(objective.q), int(objective.r)
 
@@ -224,32 +232,46 @@ def solve_slm_manifold_single_start(
 
     W0, C0, theta_t2_0, b0 = _enforce_identifiability_order(W0, C0, theta_t2_0, b0)
 
-    # NOTE: In Pymanopt>=2, `Positive` models positive matrices and is parameterized
-    # by shape (m, n). We represent positive vectors as (r, 1).
+    # We optimize positive parameters in log-coordinates on Euclidean factors.
     manifold = Product(
         [
-            Stiefel(p, r),
-            Stiefel(q, r),
-            Positive(r, 1),  # theta_t2 as (r, 1)
-            Positive(r, 1),  # b as (r, 1)
-            Positive(1, 1),  # sigma_h2 as (1, 1)
+            _StiefelQF(p, r),
+            _StiefelQF(q, r),
+            Euclidean(r, 1),  # theta_t2_tilde
+            Euclidean(r, 1),  # b_tilde
+            Euclidean(1, 1),  # sigma_h2_tilde
         ]
     )
 
+
     @function.numpy(manifold)
-    def cost(W, C, theta_t2, b, sigma_h2_arr):
-        theta_t2_v = np.asarray(theta_t2, dtype=float).reshape(-1)
-        b_v = np.asarray(b, dtype=float).reshape(-1)
-        sh2 = float(np.asarray(sigma_h2_arr).reshape(-1)[0])
+    def cost(W, C, theta_t2_tilde, b_tilde, sigma_h2_tilde):
+        theta_t2_v = np.exp(np.asarray(theta_t2_tilde, dtype=float).reshape(-1))
+        b_v = np.exp(np.asarray(b_tilde, dtype=float).reshape(-1))
+        sh2 = float(np.exp(np.asarray(sigma_h2_tilde, dtype=float).reshape(-1)[0]))
         return _objective_from_parts(objective, W, C, theta_t2_v, b_v, sh2)
 
     @function.numpy(manifold)
-    def egrad(W, C, theta_t2, b, sigma_h2_arr):
-        theta_t2_v = np.asarray(theta_t2, dtype=float).reshape(-1)
-        b_v = np.asarray(b, dtype=float).reshape(-1)
-        sh2 = float(np.asarray(sigma_h2_arr).reshape(-1)[0])
+    def egrad(W, C, theta_t2_tilde, b_tilde, sigma_h2_tilde):
+        theta_t2_v = np.exp(np.asarray(theta_t2_tilde, dtype=float).reshape(-1))
+        b_v = np.exp(np.asarray(b_tilde, dtype=float).reshape(-1))
+        sh2 = float(np.exp(np.asarray(sigma_h2_tilde, dtype=float).reshape(-1)[0]))
+
         gW, gC, gtheta, gb, gsh2 = _euclidean_gradient_from_parts(objective, W, C, theta_t2_v, b_v, sh2)
-        return gW, gC, np.asarray(gtheta, dtype=float).reshape(r, 1), np.asarray(gb, dtype=float).reshape(r, 1), np.asarray(gsh2, dtype=float).reshape(1, 1)
+
+        # Chain rule for log-coordinates: dL/dtilde = var * dL/dvar.
+        gtheta_tilde = np.asarray(gtheta, dtype=float).reshape(-1) * theta_t2_v
+        gb_tilde = np.asarray(gb, dtype=float).reshape(-1) * b_v
+        gsh2_tilde = float(np.asarray(gsh2, dtype=float).reshape(-1)[0]) * sh2
+
+        return (
+            gW,
+            gC,
+            np.asarray(gtheta_tilde, dtype=float).reshape(r, 1),
+            np.asarray(gb_tilde, dtype=float).reshape(r, 1),
+            np.asarray([[gsh2_tilde]], dtype=float),
+        )
+
 
     problem = Problem(manifold=manifold, cost=cost, euclidean_gradient=egrad)
 
@@ -260,10 +282,11 @@ def solve_slm_manifold_single_start(
     initial_point = (
         W0,
         C0,
-        np.asarray(theta_t2_0, dtype=float).reshape(r, 1),
-        np.asarray(b0, dtype=float).reshape(r, 1),
-        np.asarray([[sigma_h2_0]], dtype=float),
+        np.log(np.asarray(theta_t2_0, dtype=float).reshape(r, 1)),
+        np.log(np.asarray(b0, dtype=float).reshape(r, 1)),
+        np.log(np.asarray([[sigma_h2_0]], dtype=float)),
     )
+
     try:
         result = solver.run(problem, initial_point=initial_point)
     except TypeError:
@@ -284,10 +307,12 @@ def solve_slm_manifold_single_start(
     if point is None:
         raise RuntimeError("Pymanopt solver returned no point")
 
-    W_hat, C_hat, theta_t2_hat, b_hat, sh2_arr = point
-    theta_t2_hat_v = np.asarray(theta_t2_hat, dtype=float).reshape(-1)
-    b_hat_v = np.asarray(b_hat, dtype=float).reshape(-1)
-    sigma_h2_hat = float(np.asarray(sh2_arr).reshape(-1)[0])
+    W_hat, C_hat, theta_t2_tilde_hat, b_tilde_hat, sh2_tilde_arr = point
+
+    theta_t2_hat_v = np.exp(np.asarray(theta_t2_tilde_hat, dtype=float).reshape(-1))
+    b_hat_v = np.exp(np.asarray(b_tilde_hat, dtype=float).reshape(-1))
+    sigma_h2_hat = float(np.exp(np.asarray(sh2_tilde_arr, dtype=float).reshape(-1)[0]))
+
 
     W_hat, C_hat, theta_t2_hat_v, b_hat_v = _enforce_identifiability_order(
         np.asarray(W_hat, dtype=float),

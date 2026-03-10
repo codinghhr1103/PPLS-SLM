@@ -406,18 +406,18 @@ def select_shrinkage_alpha_nested_cv(
 
             Cov_s = predict_conditional_covariance(params_inner, shrinkage_alpha=float(a))
 
-            model_var = float(np.mean(np.diag(Cov_s)))
-            if np.isfinite(model_var) and model_var > 0.0:
-                resid_var = float(np.mean((Y_va - Y_hat) ** 2))
-                scale = resid_var / max(model_var, 1e-12)
-                if np.isfinite(scale) and scale > 0.0:
-                    scale_rows.append(
-                        {
-                            "inner_fold": inner_fold,
-                            "shrinkage_alpha": float(a),
-                            "covariance_scale": float(scale),
-                        }
-                    )
+            # Paper calibration scale: kappa = (1/(n_val q)) sum r_i^T V^{-1} r_i.
+            resid = Y_va - Y_hat
+            kappa = _kappa_from_residuals(resid, Cov_s)
+            if np.isfinite(kappa) and kappa > 0.0:
+                scale_rows.append(
+                    {
+                        "inner_fold": inner_fold,
+                        "shrinkage_alpha": float(a),
+                        "covariance_scale": float(kappa),
+                    }
+                )
+
 
     cv_long = pd.DataFrame(rows)
     if cv_long.empty:
@@ -439,12 +439,50 @@ def select_shrinkage_alpha_nested_cv(
     covariance_scale = 1.0
     if scale_rows:
         scale_df = pd.DataFrame(scale_rows)
-        best_scales = scale_df.loc[np.isclose(scale_df["shrinkage_alpha"].to_numpy(dtype=float), alpha_star), "covariance_scale"]
+        best_scales = scale_df.loc[
+            np.isclose(scale_df["shrinkage_alpha"].to_numpy(dtype=float), alpha_star),
+            "covariance_scale",
+        ]
         if len(best_scales):
-            covariance_scale = float(np.clip(np.median(best_scales.to_numpy(dtype=float)), 0.25, 6.0))
+            covariance_scale = float(np.mean(best_scales.to_numpy(dtype=float)))
+
 
     cv_table = cv_table.drop(columns=["distance_to_one"])
     return alpha_star, cv_table, covariance_scale
+
+
+def _kappa_from_residuals(residuals: np.ndarray, Cov: np.ndarray) -> float:
+    r"""Compute the paper's calibration scale \(\hat\kappa\).
+
+
+    \[\hat\kappa = \frac{1}{n_{val} q}\sum_{i=1}^{n_{val}} r_i^\top V^{-1} r_i\]
+
+    Here `residuals` is (n_val, q) and `Cov` is (q, q).
+    """
+    R = np.asarray(residuals, dtype=float)
+    V = np.asarray(Cov, dtype=float)
+    if R.ndim != 2 or V.ndim != 2 or V.shape[0] != V.shape[1] or R.shape[1] != V.shape[0]:
+        raise ValueError(f"shape mismatch: residuals={R.shape}, Cov={V.shape}")
+
+    n_val, q = R.shape
+    if n_val <= 0 or q <= 0:
+        return 1.0
+
+    V = (V + V.T) / 2.0
+
+    # Compute sum_i r_i^T V^{-1} r_i via Cholesky solves.
+    try:
+        L = np.linalg.cholesky(V + 1e-12 * np.eye(q))
+        Z = np.linalg.solve(L, R.T)
+        W = np.linalg.solve(L.T, Z)  # V^{-1} R^T
+    except np.linalg.LinAlgError:
+        W = np.linalg.pinv(V) @ R.T
+
+    quad = np.sum(R.T * W, axis=0)  # length n_val
+    kappa = float(np.mean(quad) / float(q))
+    if not np.isfinite(kappa) or kappa <= 0.0:
+        return 1.0
+    return kappa
 
 
 def estimate_predictive_covariance_scale_cv(
@@ -457,10 +495,10 @@ def estimate_predictive_covariance_scale_cv(
     n_folds: int = 5,
     seed: int = 0,
 ) -> float:
-    """Estimate a scalar covariance inflation factor from inner-CV residuals.
+    r"""Estimate the paper's covariance scale \(\hat\kappa\) via inner CV.
 
-    The predictive covariance in PPLS is x-independent, so a single multiplicative
-    scale often corrects systematic under-dispersion at negligible extra cost.
+
+    We compute \(\hat\kappa\) on each validation block and return the mean across folds.
     """
     from sklearn.model_selection import KFold
 
@@ -469,24 +507,17 @@ def estimate_predictive_covariance_scale_cv(
     kf = KFold(n_splits=k, shuffle=True, random_state=int(seed))
 
     Cov_s = predict_conditional_covariance(params, shrinkage_alpha=float(shrinkage_alpha))
-    model_var = float(np.mean(np.diag(Cov_s)))
-    if not np.isfinite(model_var) or model_var <= 0.0:
-        return 1.0
 
-    scales: List[float] = []
+    kappas: List[float] = []
     for _tr, va in kf.split(X_train_s):
         X_va = X_train_s[va]
         Y_va = Y_train_s[va]
         Y_hat = predict_conditional_mean(X_va, params, shrinkage_alpha=float(shrinkage_alpha))
-        resid_var = float(np.mean((Y_va - Y_hat) ** 2))
-        scale = resid_var / max(model_var, 1e-12)
-        if np.isfinite(scale) and scale > 0.0:
-            scales.append(scale)
+        resid = Y_va - Y_hat
+        kappas.append(_kappa_from_residuals(resid, Cov_s))
 
-    if not scales:
-        return 1.0
+    return float(np.mean(kappas)) if kappas else 1.0
 
-    return float(np.clip(np.median(scales), 0.25, 6.0))
 
 
 

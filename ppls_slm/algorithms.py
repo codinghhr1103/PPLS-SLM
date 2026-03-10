@@ -39,6 +39,37 @@ except Exception:  # pragma: no cover
     solve_slm_manifold_single_start = None
 
 
+def _qr_with_positive_diagonal(A: np.ndarray) -> np.ndarray:
+    """Thin QR with a deterministic sign convention (diag(R) > 0).
+
+    This matches the paper's sign-consistent QR retraction convention and avoids
+    arbitrary column-sign flips when using QR-based Stiefel initializations.
+    """
+    Q, R = np.linalg.qr(A)
+    d = np.diag(R)
+    s = np.sign(d)
+    s[s == 0] = 1.0
+    return Q * s
+
+
+def _enforce_identifiability_order(W: np.ndarray, C: np.ndarray, B: np.ndarray, Sigma_t: np.ndarray):
+    """Permute components so (diag(Sigma_t) * diag(B)) is strictly decreasing.
+
+    This is the paper's identifiability convention and leaves the likelihood invariant.
+    """
+    theta_t2 = np.diag(Sigma_t).astype(float)
+    b = np.diag(B).astype(float)
+    score = theta_t2 * b
+    order = np.argsort(score)[::-1]
+    return (
+        W[:, order],
+        C[:, order],
+        np.diag(b[order]),
+        np.diag(theta_t2[order]),
+    )
+
+
+
 
 # ======================================================================
 #  Abstract base
@@ -89,11 +120,16 @@ class PPLSAlgorithm(ABC):
 #  Starting point generator
 # ======================================================================
 class InitialPointGenerator:
+    """Generate shared starting points for multi-start optimisation.
+
+    Paper-aligned default initialisation:
+    - Sample W and C uniformly on the Stiefel manifolds via QR.
+    - Initialise Sigma_t = I_r, B = I_r, sigma_h^2 = 0.01.
+
+    (Noise variances sigma_e^2 / sigma_f^2 are handled separately via the
+    spectral pre-estimation protocol.)
     """
-    Generate shared random starting points for multi-start optimisation.
-    All parameters (including diagonal and scalar ones) are randomised so
-    that the multi-start strategy explores the parameter space effectively.
-    """
+
 
     def __init__(self, p: int, q: int, r: int, n_starts: int = 32,
                  random_seed: int = 42):
@@ -106,22 +142,25 @@ class InitialPointGenerator:
         return [self._generate_single_point(rng) for _ in range(self.n_starts)]
 
     def _generate_single_point(self, rng: np.random.RandomState) -> np.ndarray:
-        # Random orthonormal W and C
-        W = orth(rng.randn(self.p, self.r))
-        C = orth(rng.randn(self.q, self.r))
-        if W.shape[1] < self.r:
-            W = rng.randn(self.p, self.r)
-            W, _ = np.linalg.qr(W); W = W[:, :self.r]
-        if C.shape[1] < self.r:
-            C = rng.randn(self.q, self.r)
-            C, _ = np.linalg.qr(C); C = C[:, :self.r]
+        # Random Stiefel initializations via QR, with a deterministic sign convention.
+        W = _qr_with_positive_diagonal(rng.randn(self.p, self.r))[:, : self.r]
+        C = _qr_with_positive_diagonal(rng.randn(self.q, self.r))[:, : self.r]
 
-        # Random diagonal parameters (log-uniform spread)
-        theta_t = np.sort(np.exp(rng.uniform(-1.0, 1.0, self.r)))[::-1]
-        b = np.sort(np.exp(rng.uniform(-0.5, 1.0, self.r)))[::-1]
-        sigma_h2 = np.exp(rng.uniform(-3.0, -0.5))
+        # Paper default: Sigma_t = I_r, B = I_r, sigma_h^2 = 0.01.
+        theta_t2 = np.ones(self.r, dtype=float)
+        b = np.ones(self.r, dtype=float)
+        sigma_h2 = 0.01
 
-        return np.concatenate([W.flatten(), C.flatten(), theta_t, b, [sigma_h2]])
+        # Enforce identifiability ordering (no-op for all-ones but keeps behavior consistent
+        # when a caller overrides the starting point, e.g. warm starts).
+        order = np.argsort(theta_t2 * b)[::-1]
+        W = W[:, order]
+        C = C[:, order]
+        theta_t2 = theta_t2[order]
+        b = b[order]
+
+        return np.concatenate([W.flatten(), C.flatten(), theta_t2, b, [sigma_h2]])
+
 
     def save_starting_points(self, starting_points, experiment_dir, algorithm_name="common"):
         d = os.path.join(experiment_dir, "initial_points"); os.makedirs(d, exist_ok=True)
@@ -314,6 +353,10 @@ class ScalarLikelihoodMethod(PPLSAlgorithm):
         else:
             W, C, B, Sigma_t, sigma_h2 = objective._theta_to_params(best['x'])
             sigma_e2_est, sigma_f2_est = sigma_e2, sigma_f2
+
+        # Paper identifiability post-processing: order components by (theta_t2 * b) decreasing.
+        W, C, B, Sigma_t = _enforce_identifiability_order(W, C, B, Sigma_t)
+
 
         nit = int(best.get('nit', 0))
         success_flag = bool(best.get('success', False))
@@ -576,12 +619,16 @@ class EMAlgorithm(PPLSAlgorithm):
             if self._converged(old, new):
                 break
 
+        # Paper identifiability post-processing (likelihood-invariant permutation).
+        W, C, B, Sigma_t = _enforce_identifiability_order(W, C, B, Sigma_t)
+
         ll = self._compute_ll(X, Y, W, C, B, Sigma_t, sigma_e2, sigma_f2, sigma_h2, N)
         return {
             'W': W, 'C': C, 'B': B, 'Sigma_t': Sigma_t,
             'sigma_e2': sigma_e2, 'sigma_f2': sigma_f2, 'sigma_h2': sigma_h2,
             'log_likelihood': ll, 'n_iterations': iteration + 1,
         }
+
 
     def _m_step(self, X, Y, E_T, E_U, Cov_T, Cov_U, Cov_TU, N):
         r = self.r
@@ -760,12 +807,16 @@ class ECMAlgorithm(PPLSAlgorithm):
             if self._converged(old, new):
                 break
 
+        # Paper identifiability post-processing (likelihood-invariant permutation).
+        W, C, B, Sigma_t = _enforce_identifiability_order(W, C, B, Sigma_t)
+
         ll = self._compute_ll(X, Y, W, C, B, Sigma_t, sigma_e2, sigma_f2, sigma_h2, N)
         return {
             'W': W, 'C': C, 'B': B, 'Sigma_t': Sigma_t,
             'sigma_e2': sigma_e2, 'sigma_f2': sigma_f2, 'sigma_h2': sigma_h2,
             'log_likelihood': ll, 'n_iterations': iteration + 1,
         }
+
 
     _unpack = EMAlgorithm._unpack
     _snapshot = EMAlgorithm._snapshot

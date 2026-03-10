@@ -984,7 +984,8 @@ class PPLSExperiment:
         results = algorithm.fit(X, Y, starting_points)
         
         # Compile basic statistics
-        if algorithm_name in ("SLM", "SLM-fixed", "SLM-joint", "SLM-Oracle"):
+        # Treat any SLM variant (fixed/joint/oracle/manifold) as objective-minimisation.
+        if str(algorithm_name).lower().startswith("slm"):
 
             stats = {
                 'converged': 1 if results.get('success', False) else 0,
@@ -993,7 +994,7 @@ class PPLSExperiment:
                 'avg_iterations': results.get('n_iterations', 0),
                 'best_objective': results.get('objective_value', np.inf)
             }
-        else:  # EM or ECM
+        else:  # EM / ECM
 
             stats = {
                 'converged': 1 if results.get('log_likelihood', -np.inf) > -np.inf else 0,
@@ -1002,6 +1003,7 @@ class PPLSExperiment:
                 'avg_iterations': results.get('n_iterations', 0),
                 'best_likelihood': results.get('log_likelihood', -np.inf)
             }
+
         
         return results, stats
         

@@ -29,6 +29,7 @@ from ppls_slm.utils import repo_root, setup_logging
 
 
 _DEFAULTS: Dict = {
+    # Paper default simulation setting (Section 8.1)
     "model": {"p": 20, "q": 20, "r": 3, "n_samples": 500},
     "data_generation": {
         "noise_levels": {
@@ -38,29 +39,51 @@ _DEFAULTS: Dict = {
         "sine_parameters": {"frequency": 0.7, "magnitude": 0.7},
     },
     "algorithms": {
-        "common": {"n_starts": 32, "random_seed": 42},
-        "slm": {"optimizer": "trust-constr", "max_iter": 1000, "use_noise_preestimation": True},
+        "common": {"n_starts": 8, "random_seed": 42},
+        # Fixed-noise SLM (spectral pre-estimation), as used in the paper.
+        "slm": {
+            "optimizer": "trust-constr",
+            "max_iter": 2000,
+            "use_noise_preestimation": True,
+            "gtol": 0.005,
+            "xtol": 0.005,
+            "barrier_tol": 0.005,
+            "constraint_slack": 0.005,
+        },
+        # Exact-feasible manifold variant (optional)
+        "slm_manifold": {
+            "optimizer": "manifold",
+            "max_iter": 2000,
+            "use_noise_preestimation": True,
+            "gtol": 0.005,
+            "xtol": 0.005,
+            "barrier_tol": 0.005,
+            "constraint_slack": 0.005,
+        },
+        # Diagnostics: joint-noise variant
         "slm_joint": {
             "optimizer": "trust-constr",
-            "max_iter": 1000,
+            "max_iter": 2000,
             "use_noise_preestimation": True,
-            "gtol": 1e-3,
-            "xtol": 1e-3,
-            "barrier_tol": 1e-3,
-            "constraint_slack": 1e-2,
+            "gtol": 0.005,
+            "xtol": 0.005,
+            "barrier_tol": 0.005,
+            "constraint_slack": 0.005,
         },
-        "em": {"max_iter": 1000, "tolerance": 1e-6},
+        "em": {"max_iter": 2000, "tolerance": 0.005},
+        "ecm": {"max_iter": 2000, "tolerance": 0.005},
     },
-    "experiment": {"n_trials": 100, "random_seed": 42, "parallel_trials": False, "n_jobs": 1},
+    "experiment": {"n_trials": 20, "random_seed": 42, "parallel_trials": False, "n_jobs": 1},
     "output": {
         "save_intermediate": True,
         "base_dir": None,
-        "figure_format": "pdf",
+        "figure_format": "png",
         "force_data_generation": False,
         "force_parameter_estimation": False,
         "force_visualization": False,
     },
 }
+
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
