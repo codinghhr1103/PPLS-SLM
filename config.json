@@ -38,8 +38,16 @@
       "constraint_slack": 0.005
     },
     "slm_manifold": {},
+    "bcd_slm": {
+      "max_outer_iter": 200,
+      "n_cg_steps_W": 5,
+      "n_cg_steps_C": 5,
+      "tolerance": 0.0001,
+      "use_noise_preestimation": true
+    },
 
     "em": {
+
 
       "max_iter": 2000,
       "tolerance": 0.005

@@ -20,8 +20,10 @@ import argparse
 import numpy as np
 
 from ppls_slm.algorithms import InitialPointGenerator, ScalarLikelihoodMethod
+from ppls_slm.bcd_slm import BCDScalarLikelihoodMethod
 from ppls_slm.apps.prediction import predict_conditional_mean
 from ppls_slm.ppls_model import PPLSModel
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,9 +84,30 @@ def main() -> int:
     if missing:
         raise RuntimeError(f"SLM fit result missing keys: {missing}")
 
+    # Also sanity-check BCD-SLM (new in NeurIPS version).
+    try:
+        bcd = BCDScalarLikelihoodMethod(
+            p=p,
+            q=q,
+            r=r,
+            max_outer_iter=min(10, int(args.max_iter)),
+            n_cg_steps_W=2,
+            n_cg_steps_C=2,
+            tolerance=1e-4,
+            use_noise_preestimation=True,
+        )
+        bcd_res = bcd.fit(X, Y, starts)
+        missing_bcd = [k for k in required if k not in bcd_res]
+        if missing_bcd:
+            raise RuntimeError(f"BCD-SLM fit result missing keys: {missing_bcd}")
+    except ImportError as e:
+        # Optional dependency guard (should not happen in our default requirements).
+        print(f"[WARN] skipping BCD-SLM smoke (missing dependency): {e}")
+
     # Quick prediction sanity check.
     y_hat = predict_conditional_mean(X[:5], res)
     assert y_hat.shape == (5, q), f"Unexpected prediction shape: {y_hat.shape}"
+
 
     print("[OK] smoke passed")
     print(f"X={X.shape}, Y={Y.shape}, y_hat={y_hat.shape}")

@@ -177,7 +177,21 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
             constraint_slack=config["algorithms"]["slm"].get("constraint_slack", 1e-2),
         )
 
+        # BCD-SLM (paper Algorithm 1): block-coordinate descent with closed-form diagonal updates.
+        bcd_cfg = config.get("algorithms", {}).get("bcd_slm", {})
+        if not isinstance(bcd_cfg, dict):
+            bcd_cfg = {}
 
+        bcd_slm = BCDScalarLikelihoodMethod(
+            p=p,
+            q=q,
+            r=r,
+            max_outer_iter=int(bcd_cfg.get("max_outer_iter", 200)),
+            n_cg_steps_W=int(bcd_cfg.get("n_cg_steps_W", 5)),
+            n_cg_steps_C=int(bcd_cfg.get("n_cg_steps_C", 5)),
+            tolerance=float(bcd_cfg.get("tolerance", 1e-4)),
+            use_noise_preestimation=bool(bcd_cfg.get("use_noise_preestimation", True)),
+        )
 
         em = EMAlgorithm(
 
@@ -231,10 +245,14 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
         slm_oracle_results = slm_oracle.fit(X, Y, starting_points)
         slm_oracle_time = time.time() - slm_oracle_start_time
 
+        bcd_start_time = time.time()
+        bcd_slm_results = bcd_slm.fit(X, Y, starting_points)
+        bcd_slm_time = time.time() - bcd_start_time
 
         em_start_time = time.time()
         em_results = em.fit(X, Y, starting_points)
         em_time = time.time() - em_start_time
+
 
         ecm_start_time = time.time()
         ecm_results = ecm.fit(X, Y, starting_points)
@@ -248,9 +266,10 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
         )
         slm_joint_converged = 1 if slm_joint_results.get("success", False) else 0
         slm_oracle_converged = 1 if slm_oracle_results.get("success", False) else 0
-
+        bcd_slm_converged = 1 if bcd_slm_results.get("success", False) else 0
 
         em_converged = 1 if em_results.get("log_likelihood", -np.inf) > -np.inf else 0
+
         ecm_converged = 1 if ecm_results.get("log_likelihood", -np.inf) > -np.inf else 0
 
 
@@ -309,6 +328,15 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
                 "best_objective": slm_oracle_results.get("objective_value", np.inf),
                 "avg_iterations": slm_oracle_results.get("n_iterations", 0),
             },
+            "bcd_slm": {
+                "runtime": bcd_slm_time,
+                "avg_time_per_start": bcd_slm_time / len(starting_points),
+                "converged": bcd_slm_converged,
+                "failed": 1 - bcd_slm_converged,
+                "convergence_rate": float(bcd_slm_converged),
+                "best_objective": bcd_slm_results.get("objective_value", np.inf),
+                "avg_iterations": bcd_slm_results.get("n_iterations", 0),
+            },
             "em": {
                 "runtime": em_time,
                 "avg_time_per_start": em_time / len(starting_points),
@@ -343,8 +371,10 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
             "slm_manifold_results": slm_manifold_results,
             "slm_joint_results": slm_joint_results,
             "slm_oracle_results": slm_oracle_results,
+            "bcd_slm_results": bcd_slm_results,
             "em_results": em_results,
             "ecm_results": ecm_results,
+
 
             "data_shape": {"X": X.shape, "Y": Y.shape},
             "statistics": stats_summary,
@@ -371,7 +401,9 @@ def _run_trial_worker(trial_id: int, X: np.ndarray, Y: np.ndarray, seed: int) ->
 
 
 from .algorithms import InitialPointGenerator, ScalarLikelihoodMethod, EMAlgorithm, ECMAlgorithm, NoiseEstimator
+from .bcd_slm import BCDScalarLikelihoodMethod
 from .ppls_model import PPLSModel
+
 
 
 class PPLSExperiment:
@@ -456,7 +488,8 @@ class PPLSExperiment:
         print(f"Model dimensions: p={self.p}, q={self.q}, r={self.r}")
         print(f"Sample size: {self.n_samples}")
         print(f"Starting points per algorithm: {self.n_starts}")
-        print(f"Algorithms: SLM-fixed, SLM-joint, SLM-Oracle, EM, ECM")
+        print(f"Algorithms: SLM-fixed, BCD-SLM, SLM-joint, SLM-Oracle, EM, ECM")
+
 
 
         print(f"Ground truth: Fixed for all trials")
@@ -644,10 +677,12 @@ class PPLSExperiment:
                 'slm_results': comparison_results['slm'],
                 'slm_manifold_results': comparison_results.get('slm_manifold'),
                 'slm_joint_results': comparison_results['slm_joint'],
+                'bcd_slm_results': comparison_results.get('bcd_slm'),
 
                 'slm_oracle_results': comparison_results['slm_oracle'],
                 'em_results': comparison_results['em'],
                 'ecm_results': comparison_results['ecm'],
+
                 'data_shape': {'X': X.shape, 'Y': Y.shape},
                 'statistics': comparison_results.get('statistics', {})
             }
@@ -757,9 +792,21 @@ class PPLSExperiment:
             constraint_slack=self.config['algorithms']['slm'].get('constraint_slack', 1e-2),
         )
 
+        # BCD-SLM (paper Algorithm 1)
+        bcd_cfg = self.config.get('algorithms', {}).get('bcd_slm', {})
+        if not isinstance(bcd_cfg, dict):
+            bcd_cfg = {}
+        bcd_slm = BCDScalarLikelihoodMethod(
+            p=self.p,
+            q=self.q,
+            r=self.r,
+            max_outer_iter=int(bcd_cfg.get('max_outer_iter', 200)),
+            n_cg_steps_W=int(bcd_cfg.get('n_cg_steps_W', 5)),
+            n_cg_steps_C=int(bcd_cfg.get('n_cg_steps_C', 5)),
+            tolerance=float(bcd_cfg.get('tolerance', 1e-4)),
+            use_noise_preestimation=bool(bcd_cfg.get('use_noise_preestimation', True)),
+        )
 
-
-        
         em = EMAlgorithm(
             p=self.p, q=self.q, r=self.r,
             max_iter=self.config['algorithms']['em']['max_iter'],
@@ -835,8 +882,20 @@ class PPLSExperiment:
             f"convergence: {slm_oracle_stats['convergence_rate']*100:.1f}%"
         )
 
-        
+        # Run BCD-SLM (block-coordinate descent) next
+        print(f"Running BCD-SLM with {len(starting_points)} starting points...")
+        bcd_start_time = time.time()
+        bcd_slm_results, bcd_slm_stats = self._run_algorithm_with_stats(
+            bcd_slm, X, Y, starting_points, trial_id, "BCD-SLM"
+        )
+        bcd_slm_time = time.time() - bcd_start_time
+        print(
+            f"BCD-SLM completed: {bcd_slm_time:.2f}s, "
+            f"convergence: {bcd_slm_stats['convergence_rate']*100:.1f}%"
+        )
+
         # Run EM third
+
 
         print(f"Running EM with {len(starting_points)} starting points...")
         em_start_time = time.time()
@@ -910,6 +969,15 @@ class PPLSExperiment:
                 'best_objective': slm_oracle_stats['best_objective'],
                 'avg_iterations': slm_oracle_stats['avg_iterations']
             },
+            'bcd_slm': {
+                'runtime': bcd_slm_time,
+                'avg_time_per_start': bcd_slm_time/len(starting_points),
+                'converged': bcd_slm_stats['converged'],
+                'failed': bcd_slm_stats['failed'],
+                'convergence_rate': bcd_slm_stats['converged']/len(starting_points),
+                'best_objective': bcd_slm_stats['best_objective'],
+                'avg_iterations': bcd_slm_stats['avg_iterations']
+            },
             'em': {
                 'runtime': em_time,
                 'avg_time_per_start': em_time/len(starting_points),
@@ -946,9 +1014,11 @@ class PPLSExperiment:
             'slm_manifold': slm_manifold_results,
             'slm_joint': slm_joint_results,
             'slm_oracle': slm_oracle_results,
+            'bcd_slm': bcd_slm_results,
             'em': em_results,
             'ecm': ecm_results,
             'statistics': stats_summary
+
         }
 
 
@@ -1023,6 +1093,7 @@ class PPLSExperiment:
         """
         # Initialize metrics calculators
         slm_metrics_list = []
+        bcd_slm_metrics_list = []
         slm_manifold_metrics_list = []
         slm_joint_metrics_list = []
         slm_oracle_metrics_list = []
@@ -1031,11 +1102,13 @@ class PPLSExperiment:
         
         # Collect runtime statistics
         slm_runtime_stats = []
+        bcd_slm_runtime_stats = []
         slm_manifold_runtime_stats = []
         slm_joint_runtime_stats = []
         slm_oracle_runtime_stats = []
         em_runtime_stats = []
         ecm_runtime_stats = []
+
 
 
 
@@ -1049,7 +1122,14 @@ class PPLSExperiment:
             slm_metrics = metrics_calc.compute_mse(trial['slm_results'])
             slm_metrics_list.append(slm_metrics)
 
+            # Compute metrics for BCD-SLM (if present)
+            bcd_res = trial.get('bcd_slm_results', None)
+            if isinstance(bcd_res, dict) and bcd_res:
+                bcd_metrics = metrics_calc.compute_mse(bcd_res)
+                bcd_slm_metrics_list.append(bcd_metrics)
+
             # Compute metrics for SLM-Manifold (if present)
+
             slm_man_res = trial.get('slm_manifold_results', None)
             if isinstance(slm_man_res, dict) and slm_man_res:
                 slm_man_metrics = metrics_calc.compute_mse(slm_man_res)
@@ -1078,6 +1158,8 @@ class PPLSExperiment:
             # Collect runtime statistics if available
             if 'statistics' in trial:
                 slm_runtime_stats.append(trial['statistics']['slm'])
+                if 'bcd_slm' in trial['statistics']:
+                    bcd_slm_runtime_stats.append(trial['statistics']['bcd_slm'])
                 if 'slm_manifold' in trial['statistics']:
                     slm_manifold_runtime_stats.append(trial['statistics']['slm_manifold'])
                 if 'slm_joint' in trial['statistics']:
@@ -1089,10 +1171,12 @@ class PPLSExperiment:
                 ecm_runtime_stats.append(trial['statistics']['ecm'])
 
 
+
         
         # Aggregate metrics
         analysis = {
             'slm': self._aggregate_metrics(slm_metrics_list),
+            'bcd_slm': self._aggregate_metrics(bcd_slm_metrics_list),
             'slm_manifold': self._aggregate_metrics(slm_manifold_metrics_list),
             'slm_joint': self._aggregate_metrics(slm_joint_metrics_list),
             'slm_oracle': self._aggregate_metrics(slm_oracle_metrics_list),
@@ -1100,6 +1184,7 @@ class PPLSExperiment:
             'ecm': self._aggregate_metrics(ecm_metrics_list),
             'comparison': self._compare_methods(slm_metrics_list, em_metrics_list, ecm_metrics_list)
         }
+
 
 
 
@@ -1117,8 +1202,15 @@ class PPLSExperiment:
                 }
             }
 
+            if bcd_slm_runtime_stats:
+                runtime_statistics['bcd_slm'] = self._aggregate_runtime_stats(bcd_slm_runtime_stats)
+                runtime_statistics['overall']['total_runtime_bcd_slm'] = sum(
+                    s['runtime'] for s in bcd_slm_runtime_stats if s.get('runtime') is not None
+                )
+
             if slm_manifold_runtime_stats:
                 runtime_statistics['slm_manifold'] = self._aggregate_runtime_stats(slm_manifold_runtime_stats)
+
                 runtime_statistics['overall']['total_runtime_slm_manifold'] = sum(
                     s['runtime'] for s in slm_manifold_runtime_stats if s.get('runtime') is not None
                 )
@@ -1144,7 +1236,7 @@ class PPLSExperiment:
         if trial_results:
             metrics_calc = PerformanceMetrics(trial_results[0]['true_params'])
             summary_table = metrics_calc.generate_summary_table(
-                slm_metrics_list, em_metrics_list, ecm_metrics_list
+                slm_metrics_list, bcd_slm_metrics_list, em_metrics_list, ecm_metrics_list
             )
             analysis['summary_table'] = summary_table
             
@@ -1336,66 +1428,50 @@ class PerformanceMetrics:
         return mse_dict
 
         
-    def generate_summary_table(self, slm_metrics_list: List[Dict],
-                             em_metrics_list: List[Dict],
-                             ecm_metrics_list: List[Dict]) -> pd.DataFrame:
-        """
-        Generate summary table for all three algorithms (Table 2 format).
-        
-        Parameters:
-        -----------
-        slm_metrics_list : List[Dict]
-            SLM metrics from all trials
-        em_metrics_list : List[Dict]
-            EM metrics from all trials
-        ecm_metrics_list : List[Dict]
-            ECM metrics from all trials
-            
-        Returns:
-        --------
-        table : pd.DataFrame
-            Summary statistics table
-        """
-        # Define parameters to include
+    def generate_summary_table(
+        self,
+        slm_metrics_list: List[Dict],
+        bcd_slm_metrics_list: List[Dict],
+        em_metrics_list: List[Dict],
+        ecm_metrics_list: List[Dict],
+    ) -> pd.DataFrame:
+        """Generate summary table (paper-style parameter MSE, \(\times 10^2\))."""
         params = ['W', 'C', 'B', 'Sigma_t', 'sigma_h2']
-        
-        # Initialize table data
+
         table_data = []
-        
         for param in params:
             mse_key = f'mse_{param}'
-            
-            # SLM statistics
+
+            # SLM-Fixed
             slm_values = [m[mse_key] for m in slm_metrics_list if mse_key in m]
             slm_mean = np.mean(slm_values) if slm_values else np.nan
             slm_std = np.std(slm_values) if slm_values else np.nan
-            
-            # EM statistics
+
+            # BCD-SLM
+            bcd_values = [m[mse_key] for m in bcd_slm_metrics_list if mse_key in m]
+            bcd_mean = np.mean(bcd_values) if bcd_values else np.nan
+            bcd_std = np.std(bcd_values) if bcd_values else np.nan
+
+            # EM
             em_values = [m[mse_key] for m in em_metrics_list if mse_key in m]
             em_mean = np.mean(em_values) if em_values else np.nan
             em_std = np.std(em_values) if em_values else np.nan
-            
-            # ECM statistics
+
+            # ECM
             ecm_values = [m[mse_key] for m in ecm_metrics_list if mse_key in m]
             ecm_mean = np.mean(ecm_values) if ecm_values else np.nan
             ecm_std = np.std(ecm_values) if ecm_values else np.nan
-            
-            # Format as mean ± std (×10^2)
-            slm_str = f"{slm_mean*100:.2f}±{slm_std*100:.2f}"
-            em_str = f"{em_mean*100:.2f}±{em_std*100:.2f}"
-            ecm_str = f"{ecm_mean*100:.2f}±{ecm_std*100:.2f}"
-            
+
             table_data.append({
                 'Parameter': param,
-                'SLM': slm_str,
-                'EM': em_str,
-                'ECM': ecm_str
+                'SLM-Fixed': f"{slm_mean*100:.2f}±{slm_std*100:.2f}",
+                'BCD-SLM': f"{bcd_mean*100:.2f}±{bcd_std*100:.2f}",
+                'EM': f"{em_mean*100:.2f}±{em_std*100:.2f}",
+                'ECM': f"{ecm_mean*100:.2f}±{ecm_std*100:.2f}",
             })
-            
-        # Create DataFrame
-        table = pd.DataFrame(table_data)
-        
-        return table
+
+        return pd.DataFrame(table_data)
+
 
 
 class ParameterRecovery:

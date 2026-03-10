@@ -99,7 +99,8 @@ def generate_convergence_table(*, artifacts_dir: Path, out_path: Path) -> None:
 
     # Normalise algorithm names to match current Monte Carlo outputs.
     # (We now report SLM-Fixed / SLM-Joint / SLM-Oracle explicitly.)
-    order = ["SLM-Fixed", "SLM-Joint", "SLM-Oracle", "EM", "ECM"]
+    order = ["SLM-Fixed", "BCD-SLM", "SLM-Joint", "SLM-Oracle", "EM", "ECM"]
+
 
 
     df = df.copy()
@@ -170,11 +171,13 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
 
     methods = [
         ("slm", "SLM-Fixed"),
+        ("bcd_slm", "BCD-SLM"),
         ("slm_joint", "SLM-Joint"),
         ("slm_oracle", "SLM-Oracle"),
         ("em", "EM"),
         ("ecm", "ECM"),
     ]
+
 
 
     keys = [
@@ -235,7 +238,8 @@ def generate_parameter_recovery_scale_table(*, artifacts_dir: Path, out_path: Pa
     if df.empty:
         raise ValueError(f"No rows found for noise='{noise}' in {path}")
 
-    method_order = ["SLM-Fixed", "SLM-Oracle", "EM", "ECM"]
+    method_order = ["SLM-Fixed", "BCD-SLM", "SLM-Oracle", "EM", "ECM"]
+
     metric_cols = [
         ("mse_W_table_str_x1e2", r"$\text{MSE}_W$"),
         ("mse_C_table_str_x1e2", r"$\text{MSE}_C$"),
@@ -313,9 +317,11 @@ def generate_parameter_recovery_scale_runtime_table(*, artifacts_dir: Path, out_
         rf"\caption{{Wall-clock summary for the large-scale parameter recovery study. The full run took {total_minutes:.1f} minutes on the reported hardware; method columns show average per-trial runtime (seconds).}}"
     )
     tex.append(r"\label{tab:parameter_recovery_scale_runtime}")
-    tex.append(r"\begin{tabular}{cccccccc}")
+    tex.append(r"\begin{tabular}{ccccccccc}")
+
     tex.append(r"\toprule")
-    tex.append(r"Cfg & $N$ & Low min & High min & SLM-Fixed & SLM-Oracle & EM & ECM \\")
+    tex.append(r"Cfg & $N$ & Low min & High min & SLM-Fixed & BCD-SLM & SLM-Oracle & EM & ECM \\")
+
     tex.append(r"\midrule")
 
     for config_id in sorted(runtime_pivot.index.astype(int).tolist()):
@@ -325,7 +331,8 @@ def generate_parameter_recovery_scale_runtime_table(*, artifacts_dir: Path, out_
         high_min = float(runtime_pivot.loc[config_id, "high"])
         method_means = method_pivot.loc[config_id]
         tex.append(
-            f"C{config_id} & {n_samples} & {low_min:.2f} & {high_min:.2f} & {float(method_means['SLM-Fixed']):.2f} & {float(method_means['SLM-Oracle']):.2f} & {float(method_means['EM']):.2f} & {float(method_means['ECM']):.2f} \\\\\\\\" 
+            f"C{config_id} & {n_samples} & {low_min:.2f} & {high_min:.2f} & {float(method_means['SLM-Fixed']):.2f} & {float(method_means['BCD-SLM']):.2f} & {float(method_means['SLM-Oracle']):.2f} & {float(method_means['EM']):.2f} & {float(method_means['ECM']):.2f} \\\\\\\\" 
+
         )
 
     tex.append(r"\bottomrule")

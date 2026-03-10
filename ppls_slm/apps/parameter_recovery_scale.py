@@ -25,18 +25,22 @@ import numpy as np
 import pandas as pd
 
 from ppls_slm.algorithms import ECMAlgorithm, EMAlgorithm, InitialPointGenerator, ScalarLikelihoodMethod
+from ppls_slm.bcd_slm import BCDScalarLikelihoodMethod
+
 from ppls_slm.data_generator import RandomOrthogonalDataGenerator
 from ppls_slm.experiment_config import ConfigError, load_config
 from ppls_slm.utils import ensure_dir, repo_root, setup_logging
 
 
-METHOD_ORDER = ["slm_fixed", "slm_oracle", "em", "ecm"]
+METHOD_ORDER = ["slm_fixed", "bcd_slm", "slm_oracle", "em", "ecm"]
 METHOD_DISPLAY = {
     "slm_fixed": "SLM-Fixed",
+    "bcd_slm": "BCD-SLM",
     "slm_oracle": "SLM-Oracle",
     "em": "EM",
     "ecm": "ECM",
 }
+
 METRIC_KEYS = ["mse_W", "mse_C", "mse_B", "mse_Sigma_t", "mse_sigma_h2"]
 NOISE_ORDER = ["low", "high"]
 _WORKER_CTX: Dict[str, Any] = {}
@@ -136,8 +140,17 @@ def _instantiate_methods(condition: Dict[str, Any], true_params: Dict[str, Any])
     exp_cfg = condition["experiment_cfg"]
     return {
         "slm_fixed": ScalarLikelihoodMethod(**common, **_slm_kwargs(exp_cfg, oracle=False, true_params=true_params)),
+        "bcd_slm": BCDScalarLikelihoodMethod(
+            **common,
+            max_outer_iter=int(exp_cfg["max_iter"]),
+            n_cg_steps_W=int(exp_cfg.get("bcd_n_cg_steps_W", 5)),
+            n_cg_steps_C=int(exp_cfg.get("bcd_n_cg_steps_C", 5)),
+            tolerance=float(exp_cfg.get("bcd_tolerance", exp_cfg.get("slm_gtol", 5e-3))),
+            use_noise_preestimation=True,
+        ),
         "slm_oracle": ScalarLikelihoodMethod(**common, **_slm_kwargs(exp_cfg, oracle=True, true_params=true_params)),
         "em": EMAlgorithm(
+
             **common,
             max_iter=int(exp_cfg["max_iter"]),
             tolerance=float(exp_cfg.get("em_tolerance", 5e-3)),
@@ -151,9 +164,10 @@ def _instantiate_methods(condition: Dict[str, Any], true_params: Dict[str, Any])
 
 
 def _method_success(method_name: str, result: Dict[str, Any]) -> bool:
-    if method_name.startswith("slm"):
+    if method_name.startswith("slm") or method_name.startswith("bcd"):
         return bool(result.get("success", False))
     return np.isfinite(float(result.get("log_likelihood", np.nan)))
+
 
 
 def _init_worker(condition: Dict[str, Any], true_params: Dict[str, Any], starting_points: List[np.ndarray]) -> None:
@@ -205,10 +219,11 @@ def _run_trial_worker(trial_id: int, trial_seed: int) -> Dict[str, Any]:
             result = estimator.fit(X, Y, starting_points)
             record["success"] = _method_success(method_name, result)
             record["n_iterations"] = float(result.get("n_iterations", np.nan))
-            if method_name.startswith("slm"):
+            if method_name.startswith("slm") or method_name.startswith("bcd"):
                 record["objective_or_ll"] = float(result.get("objective_value", np.nan))
             else:
                 record["objective_or_ll"] = float(result.get("log_likelihood", np.nan))
+
             metrics = compute_parameter_mse(result, true_params)
             record.update(metrics)
         except Exception as exc:

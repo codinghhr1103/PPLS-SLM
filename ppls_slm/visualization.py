@@ -119,15 +119,24 @@ class PPLSVisualizer:
         # Extract parameters
         true_params = trial_result['true_params']
         slm_results = trial_result['slm_results']
+        bcd_slm_results = trial_result.get('bcd_slm_results')
         slm_oracle_results = trial_result.get('slm_oracle_results')
         em_results = trial_result['em_results']
         ecm_results = trial_result['ecm_results']
+
+
+        W_bcd = None
+        C_bcd = None
+        if isinstance(bcd_slm_results, dict) and bcd_slm_results:
+            W_bcd = bcd_slm_results.get('W')
+            C_bcd = bcd_slm_results.get('C')
 
         W_slm_oracle = None
         C_slm_oracle = None
         if isinstance(slm_oracle_results, dict) and slm_oracle_results:
             W_slm_oracle = slm_oracle_results.get('W')
             C_slm_oracle = slm_oracle_results.get('C')
+
         
         # Create separate figures for W and C
         fig_W = self.loading_plotter.plot_W_comparison(
@@ -136,8 +145,10 @@ class PPLSVisualizer:
             em_results['W'],
             ecm_results['W'],
             component_idx,
+            W_bcd=W_bcd,
             W_slm_oracle=W_slm_oracle,
         )
+
         
         fig_C = self.loading_plotter.plot_C_comparison(
             true_params['C'],
@@ -145,8 +156,10 @@ class PPLSVisualizer:
             em_results['C'],
             ecm_results['C'],
             component_idx,
+            C_bcd=C_bcd,
             C_slm_oracle=C_slm_oracle,
         )
+
         
         # Save figures with publication-quality naming
         filename_W = f'loading_W_Component_{component_idx+1}.{self.figure_format}'
@@ -170,11 +183,13 @@ class PPLSVisualizer:
         """
         # Extract metrics for all three algorithms
         slm_metrics = analysis_results.get('slm', {})
+        bcd_metrics = analysis_results.get('bcd_slm', {})
         em_metrics = analysis_results.get('em', {})
         ecm_metrics = analysis_results.get('ecm', {})
         
         # Create MSE comparison bar plot
-        fig = self.performance_plotter.plot_mse_bars(slm_metrics, em_metrics, ecm_metrics)
+        fig = self.performance_plotter.plot_mse_bars(slm_metrics, bcd_metrics, em_metrics, ecm_metrics)
+
         
         filename = f'Figure_4_MSE_Comparison.{self.figure_format}'
         fig.savefig(os.path.join(self.figure_dir, filename), 
@@ -182,7 +197,8 @@ class PPLSVisualizer:
         plt.close(fig)
         
         # Export MSE comparison to Excel
-        self._export_mse_to_excel(slm_metrics, em_metrics, ecm_metrics)
+        self._export_mse_to_excel(slm_metrics, bcd_metrics, em_metrics, ecm_metrics)
+
             
     def plot_convergence_history(self, trial_results: List[Dict]):
         """
@@ -195,16 +211,19 @@ class PPLSVisualizer:
         """
         # Extract convergence data (iterations are summarised over successful trials only).
         slm_iterations: List[int] = []
+        bcd_slm_iterations: List[int] = []
         slm_joint_iterations: List[int] = []
         slm_oracle_iterations: List[int] = []
         em_iterations: List[int] = []
         ecm_iterations: List[int] = []
 
         slm_success: List[int] = []
+        bcd_slm_success: List[int] = []
         slm_joint_success: List[int] = []
         slm_oracle_success: List[int] = []
         em_success: List[int] = []
         ecm_success: List[int] = []
+
 
 
         for trial in trial_results:
@@ -214,7 +233,14 @@ class PPLSVisualizer:
             if slm_ok and 'n_iterations' in slm_res:
                 slm_iterations.append(int(slm_res['n_iterations']))
 
+            bcd_res = trial.get('bcd_slm_results', {})
+            bcd_ok = bool(bcd_res.get('success', False))
+            bcd_slm_success.append(int(bcd_ok))
+            if bcd_ok and 'n_iterations' in bcd_res:
+                bcd_slm_iterations.append(int(bcd_res['n_iterations']))
+
             slm_joint_res = trial.get('slm_joint_results', {})
+
             slm_joint_ok = bool(slm_joint_res.get('success', False))
             slm_joint_success.append(int(slm_joint_ok))
             if slm_joint_ok and 'n_iterations' in slm_joint_res:
@@ -242,18 +268,21 @@ class PPLSVisualizer:
         # Export convergence comparison table to Excel
         self._export_convergence_table_to_excel(
             slm_iterations,
+            bcd_slm_iterations,
             slm_joint_iterations,
             slm_oracle_iterations,
             em_iterations,
             ecm_iterations,
             success_rates={
                 'SLM-Fixed': float(np.mean(slm_success)) if slm_success else 0.0,
+                'BCD-SLM': float(np.mean(bcd_slm_success)) if bcd_slm_success else 0.0,
                 'SLM-Joint': float(np.mean(slm_joint_success)) if slm_joint_success else 0.0,
                 'SLM-Oracle': float(np.mean(slm_oracle_success)) if slm_oracle_success else 0.0,
                 'EM': float(np.mean(em_success)) if em_success else 0.0,
                 'ECM': float(np.mean(ecm_success)) if ecm_success else 0.0,
             },
         )
+
 
         
     def create_results_summary(self, experiment_results: Dict):
@@ -272,8 +301,9 @@ class PPLSVisualizer:
         if 'analysis' in experiment_results and 'summary_table' in experiment_results['analysis']:
             self._export_summary_table_to_excel(experiment_results['analysis']['summary_table'])
             
-    def _export_mse_to_excel(self, slm_metrics: Dict, em_metrics: Dict, ecm_metrics: Dict):
+    def _export_mse_to_excel(self, slm_metrics: Dict, bcd_metrics: Dict, em_metrics: Dict, ecm_metrics: Dict):
         """Export MSE comparison to Excel file."""
+
         params = ['W', 'C', 'B', 'Sigma_t', 'sigma_h2']
         
         data = []
@@ -283,11 +313,14 @@ class PPLSVisualizer:
                 'Parameter': param,
                 'SLM_mean': slm_metrics.get(key, {}).get('mean', 0) * 100,
                 'SLM_std': slm_metrics.get(key, {}).get('std', 0) * 100,
+                'BCD_mean': bcd_metrics.get(key, {}).get('mean', 0) * 100,
+                'BCD_std': bcd_metrics.get(key, {}).get('std', 0) * 100,
                 'EM_mean': em_metrics.get(key, {}).get('mean', 0) * 100,
                 'EM_std': em_metrics.get(key, {}).get('std', 0) * 100,
                 'ECM_mean': ecm_metrics.get(key, {}).get('mean', 0) * 100,
                 'ECM_std': ecm_metrics.get(key, {}).get('std', 0) * 100
             }
+
             data.append(row)
             
         df = pd.DataFrame(data)
@@ -306,6 +339,7 @@ class PPLSVisualizer:
     def _export_convergence_table_to_excel(
         self,
         slm_iterations: List[int],
+        bcd_slm_iterations: List[int],
         slm_joint_iterations: List[int],
         slm_oracle_iterations: List[int],
         em_iterations: List[int],
@@ -325,50 +359,57 @@ class PPLSVisualizer:
 
         # Calculate statistics for convergence comparison
         convergence_data = {
-            'Algorithm': ['SLM-Fixed', 'SLM-Joint', 'SLM-Oracle', 'EM', 'ECM'],
+            'Algorithm': ['SLM-Fixed', 'BCD-SLM', 'SLM-Joint', 'SLM-Oracle', 'EM', 'ECM'],
             'Mean_Iterations': [
                 np.mean(slm_iterations) if slm_iterations else 0,
+                np.mean(bcd_slm_iterations) if bcd_slm_iterations else 0,
                 np.mean(slm_joint_iterations) if slm_joint_iterations else 0,
                 np.mean(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.mean(em_iterations) if em_iterations else 0,
-                np.mean(ecm_iterations) if ecm_iterations else 0
+                np.mean(ecm_iterations) if ecm_iterations else 0,
             ],
             'Std_Iterations': [
                 np.std(slm_iterations) if slm_iterations else 0,
+                np.std(bcd_slm_iterations) if bcd_slm_iterations else 0,
                 np.std(slm_joint_iterations) if slm_joint_iterations else 0,
                 np.std(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.std(em_iterations) if em_iterations else 0,
-                np.std(ecm_iterations) if ecm_iterations else 0
+                np.std(ecm_iterations) if ecm_iterations else 0,
             ],
             'Min_Iterations': [
                 np.min(slm_iterations) if slm_iterations else 0,
+                np.min(bcd_slm_iterations) if bcd_slm_iterations else 0,
                 np.min(slm_joint_iterations) if slm_joint_iterations else 0,
                 np.min(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.min(em_iterations) if em_iterations else 0,
-                np.min(ecm_iterations) if ecm_iterations else 0
+                np.min(ecm_iterations) if ecm_iterations else 0,
             ],
             'Max_Iterations': [
                 np.max(slm_iterations) if slm_iterations else 0,
+                np.max(bcd_slm_iterations) if bcd_slm_iterations else 0,
                 np.max(slm_joint_iterations) if slm_joint_iterations else 0,
                 np.max(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.max(em_iterations) if em_iterations else 0,
-                np.max(ecm_iterations) if ecm_iterations else 0
+                np.max(ecm_iterations) if ecm_iterations else 0,
             ],
             'Median_Iterations': [
                 np.median(slm_iterations) if slm_iterations else 0,
+                np.median(bcd_slm_iterations) if bcd_slm_iterations else 0,
                 np.median(slm_joint_iterations) if slm_joint_iterations else 0,
                 np.median(slm_oracle_iterations) if slm_oracle_iterations else 0,
                 np.median(em_iterations) if em_iterations else 0,
-                np.median(ecm_iterations) if ecm_iterations else 0
+                np.median(ecm_iterations) if ecm_iterations else 0,
             ],
             'Success_Rate': [
                 _sr('SLM-Fixed'),
+                _sr('BCD-SLM'),
                 _sr('SLM-Joint'),
                 _sr('SLM-Oracle'),
                 _sr('EM'),
                 _sr('ECM'),
             ],
         }
+
         
         df_convergence = pd.DataFrame(convergence_data)
         
@@ -423,7 +464,8 @@ class PPLSVisualizer:
             # Algorithm performance summary (without runtime details)
             if 'analysis' in experiment_results:
                 performance_data = []
-                for method in ['slm', 'em', 'ecm']:
+                for method in ['slm', 'bcd_slm', 'em', 'ecm']:
+
                     if method in experiment_results['analysis']:
                         method_analysis = experiment_results['analysis'][method]
                         perf_row = {
@@ -472,6 +514,7 @@ class LoadingPlotter:
         W_ecm: np.ndarray,
         component_idx: int = 0,
         *,
+        W_bcd: Optional[np.ndarray] = None,
         W_slm_oracle: Optional[np.ndarray] = None,
     ) -> plt.Figure:
         """
@@ -497,9 +540,14 @@ class LoadingPlotter:
         w_em = W_em[:, component_idx]
         w_ecm = W_ecm[:, component_idx]
 
+        w_bcd = None
+        if isinstance(W_bcd, np.ndarray) and W_bcd.size > 0:
+            w_bcd = W_bcd[:, component_idx]
+
         w_oracle = None
         if isinstance(W_slm_oracle, np.ndarray) and W_slm_oracle.size > 0:
             w_oracle = W_slm_oracle[:, component_idx]
+
         
         # Align signs
         try:
@@ -507,9 +555,16 @@ class LoadingPlotter:
                 w_slm = -w_slm
         except Exception:
             pass
+        if w_bcd is not None:
+            try:
+                if np.corrcoef(w_bcd, w_true)[0, 1] < 0:
+                    w_bcd = -w_bcd
+            except Exception:
+                pass
         try:
             if np.corrcoef(w_em, w_true)[0, 1] < 0:
                 w_em = -w_em
+
         except Exception:
             pass
         try:
@@ -562,7 +617,22 @@ class LoadingPlotter:
             zorder=5,
             **common,
         )
+        if w_bcd is not None:
+            ax.plot(
+                x,
+                w_bcd,
+                color="#00897B",
+                linestyle="-.",
+                linewidth=2.4,
+                marker="P",
+                markerfacecolor="#00897B",
+                markeredgecolor="black",
+                label="BCD-SLM",
+                zorder=4.5,
+                **common,
+            )
         if w_oracle is not None:
+
             ax.plot(
                 x,
                 w_oracle,
@@ -631,6 +701,7 @@ class LoadingPlotter:
         C_ecm: np.ndarray,
         component_idx: int = 0,
         *,
+        C_bcd: Optional[np.ndarray] = None,
         C_slm_oracle: Optional[np.ndarray] = None,
     ) -> plt.Figure:
         """
@@ -656,9 +727,14 @@ class LoadingPlotter:
         c_em = C_em[:, component_idx]
         c_ecm = C_ecm[:, component_idx]
 
+        c_bcd = None
+        if isinstance(C_bcd, np.ndarray) and C_bcd.size > 0:
+            c_bcd = C_bcd[:, component_idx]
+
         c_oracle = None
         if isinstance(C_slm_oracle, np.ndarray) and C_slm_oracle.size > 0:
             c_oracle = C_slm_oracle[:, component_idx]
+
         
         # Align signs
         try:
@@ -666,9 +742,16 @@ class LoadingPlotter:
                 c_slm = -c_slm
         except Exception:
             pass
+        if c_bcd is not None:
+            try:
+                if np.corrcoef(c_bcd, c_true)[0, 1] < 0:
+                    c_bcd = -c_bcd
+            except Exception:
+                pass
         try:
             if np.corrcoef(c_em, c_true)[0, 1] < 0:
                 c_em = -c_em
+
         except Exception:
             pass
         try:
@@ -721,7 +804,22 @@ class LoadingPlotter:
             zorder=5,
             **common,
         )
+        if c_bcd is not None:
+            ax.plot(
+                x,
+                c_bcd,
+                color="#00897B",
+                linestyle="-.",
+                linewidth=2.4,
+                marker="P",
+                markerfacecolor="#00897B",
+                markeredgecolor="black",
+                label="BCD-SLM",
+                zorder=4.5,
+                **common,
+            )
         if c_oracle is not None:
+
             ax.plot(
                 x,
                 c_oracle,
@@ -905,7 +1003,7 @@ class PerformancePlotter:
     Visualization of algorithm performance metrics.
     """
     
-    def plot_mse_bars(self, slm_metrics: Dict, em_metrics: Dict, 
+    def plot_mse_bars(self, slm_metrics: Dict, bcd_metrics: Dict, em_metrics: Dict, 
                      ecm_metrics: Dict) -> plt.Figure:
         """
         Create publication-ready bar plot comparing MSE across methods.
@@ -931,23 +1029,27 @@ class PerformancePlotter:
                        '$\\mathbf{\\Sigma}_t$', '$\\sigma_h^2$']
         
         x = np.arange(len(params))
-        width = 0.25
+        width = 0.20
         
         # Extract MSE values and multiply by 100 for readability
         slm_mse = [slm_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
+        bcd_mse = [bcd_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
         em_mse = [em_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
         ecm_mse = [ecm_metrics.get(f'mse_{p}', {}).get('mean', 0) * 100 for p in params]
         
         # Create bars
-        bars1 = ax.bar(x - width, slm_mse, width, label='SLM', 
+        bars1 = ax.bar(x - 1.5 * width, slm_mse, width, label='SLM-Fixed',
                       color='#2E7D32', alpha=0.8, edgecolor='black', linewidth=1)
-        bars2 = ax.bar(x, em_mse, width, label='EM', 
+        bars2 = ax.bar(x - 0.5 * width, bcd_mse, width, label='BCD-SLM',
+                      color='#00897B', alpha=0.8, edgecolor='black', linewidth=1)
+        bars3 = ax.bar(x + 0.5 * width, em_mse, width, label='EM',
                       color='#C62828', alpha=0.8, edgecolor='black', linewidth=1)
-        bars3 = ax.bar(x + width, ecm_mse, width, label='ECM', 
+        bars4 = ax.bar(x + 1.5 * width, ecm_mse, width, label='ECM',
                       color='#1565C0', alpha=0.8, edgecolor='black', linewidth=1)
         
         # Add value labels on bars
-        for bars in [bars1, bars2, bars3]:
+        for bars in [bars1, bars2, bars3, bars4]:
+
             for bar in bars:
                 height = bar.get_height()
                 if height > 0:
