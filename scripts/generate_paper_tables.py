@@ -179,9 +179,6 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
         ("ecm", "ECM"),
     ]
 
-
-
-
     keys = [
         ("W", r"$\text{MSE}_W$"),
         ("C", r"$\text{MSE}_C$"),
@@ -190,44 +187,45 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
         ("sigma_h2", r"$\text{MSE}_{\sigma_h^2}$"),
     ]
 
-    def row_for(data: Dict[str, Any], mkey: str) -> Tuple[str, ...]:
-        out: list[str] = []
-        for k, _hdr in keys:
-            out.append(_pm_makecell(str(data[mkey][k]["table_str_x1e2"])))
-        return tuple(out)
+    def rows_for(data: Dict[str, Any]) -> List[Tuple[str, Tuple[str, ...]]]:
+        rows: list[tuple[str, tuple[str, ...]]] = []
+        for mkey, mname in methods:
+            cells = tuple(_pm_makecell(str(data[mkey][k]["table_str_x1e2"])) for k, _hdr in keys)
+            rows.append((mname, cells))
+        return rows
 
-    tex = []
-    tex.append(r"\setlength{\tabcolsep}{2.5pt}")
-    tex.append(r"\begin{table}[h]\footnotesize")
+    def append_panel(tex: List[str], title: str, rows: Sequence[Tuple[str, Tuple[str, ...]]]) -> None:
+        tex.append(r"\begin{minipage}[t]{0.49\textwidth}")
+        tex.append(r"\centering")
+        tex.append(rf"\textbf{{{title}}}\\[2pt]")
+        tex.append(r"\resizebox{\linewidth}{!}{%")
+        tex.append(r"\begin{tabular}{@{}lccccc@{}}")
+        tex.append(r"\toprule")
+        tex.append(r"\textbf{Method} & $\text{MSE}_W$ & $\text{MSE}_C$ & $\text{MSE}_B$ & $\text{MSE}_{\Sigma_t}$ & $\text{MSE}_{\sigma_h^2}$ \\")
+        tex.append(r"\midrule")
+        for method, cells in rows:
+            tex.append(f"{method} & " + " & ".join(cells) + r" \\")
+        tex.append(r"\bottomrule")
+        tex.append(r"\end{tabular}%")
+        tex.append(r"}")
+        tex.append(r"\end{minipage}")
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{2pt}")
+    tex.append(r"\renewcommand{\arraystretch}{0.94}")
+    tex.append(r"\begin{table*}[t]\scriptsize")
     tex.append(r"\centering")
-    tex.append(r"\caption{Parameter estimation accuracy under different noise levels: $\text{MSE} \times 10^2$ (mean $\pm$ standard deviation)}")
+    tex.append(r"\caption{Parameter estimation MSE ($\times 10^2$) under low/high noise (mean $\pm$ std). Low-noise (left) and high-noise (right) panels are shown side by side.}")
     tex.append(r"\label{tab:parameter_mse}")
-    tex.append(r"\begin{tabular}{llccccc}")
-    tex.append(r"\toprule")
-    tex.append(r"\textbf{Noise} & \textbf{Method} & $\text{MSE}_W$ & $\text{MSE}_C$ & $\text{MSE}_B$ & $\text{MSE}_{\Sigma_t}$ & $\text{MSE}_{\sigma_h^2}$ \\")
-    tex.append(r"\midrule")
-
-    # Low noise block
-    for i, (mkey, mname) in enumerate(methods):
-        cells = row_for(low, mkey)
-        noise = "Low" if i == 0 else ""
-        lead = f"{noise}  & {mname}" if noise else f"     & {mname}"
-        tex.append(lead + " & " + " & ".join(cells) + r" \\")
-    tex.append(r"\midrule")
-
-    # High noise block
-    for i, (mkey, mname) in enumerate(methods):
-        cells = row_for(high, mkey)
-        noise = "High" if i == 0 else ""
-        lead = f"{noise} & {mname}" if noise else f"     & {mname}"
-        tex.append(lead + " & " + " & ".join(cells) + r" \\")
-
-    tex.append(r"\bottomrule")
-    tex.append(r"\end{tabular}")
-    tex.append(r"\end{table}")
+    append_panel(tex, "Low noise", rows_for(low))
+    tex.append(r"\hfill")
+    append_panel(tex, "High noise", rows_for(high))
+    tex.append(r"\end{table*}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
     tex.append("")
 
     out_path.write_text("\n".join(tex), encoding="utf-8")
+
 
 
 def generate_parameter_recovery_scale_table(*, artifacts_dir: Path, out_path: Path, noise: str) -> None:
@@ -383,7 +381,7 @@ def generate_top10_pairs_table(*, artifacts_dir: Path, out_path: Path) -> None:
     tex.append(r"\setlength{\tabcolsep}{7pt}")
     tex.append(r"\begin{table}[t]\small")
     tex.append(r"\centering")
-    tex.append(r"\caption{Top 10 gene-protein pairs identified by SLM among all latent variables sorted by the sum of absolute correlation coefficients}")
+    tex.append(r"\caption{Top 10 gene-protein pairs identified by SLM-Manifold among all latent variables sorted by the sum of absolute correlation coefficients}")
     tex.append(r"\label{tab:top10}")
     tex.append(r"\begin{tabular}{c| c c c c c}")
     tex.append(r"\toprule")
@@ -432,7 +430,7 @@ def generate_detection_table(*, artifacts_dir: Path, out_path: Path) -> None:
     tex = []
     tex.append(r"\begin{table}[t]\small")
     tex.append(r"\centering")
-    tex.append(r"\caption{Number of detected gene-protein pairs by SLM and EM under different p-values}")
+    tex.append(r"\caption{Number of detected gene-protein pairs by SLM-Manifold and EM under different p-values}")
     tex.append(r"\label{tab:Npairs}")
     tex.append(r"\begin{tabular}{l| c c c c}")
     tex.append(r"\toprule")
@@ -444,7 +442,7 @@ def generate_detection_table(*, artifacts_dir: Path, out_path: Path) -> None:
     em = [r[2] for r in rows]
     ov = [r[3] for r in rows]
 
-    tex.append("SLM & " + " & ".join(str(x) for x in slm) + r" \\")
+    tex.append("SLM-Manifold & " + " & ".join(str(x) for x in slm) + r" \\")
     tex.append("EM & " + " & ".join(str(x) for x in em) + r" \\")
     tex.append(r"\midrule")
     tex.append("Overlap & " + " & ".join(str(x) for x in ov) + r" \\")
@@ -516,11 +514,13 @@ def _pm_makecell_float(mean: float, std: float, *, fmt: str = ".3f") -> str:
 def _pick_slm_method(methods: Sequence[str]) -> Optional[str]:
     """Pick the most informative available SLM method name."""
     methods = [str(m) for m in methods]
-    candidates = [m for m in methods if m.startswith("PPLS-SLM")]
+    candidates = [m for m in methods if m.startswith("PPLS-SLM") or m.startswith("SLM")]
     if not candidates:
         return None
 
     priority = [
+        "SLM-Manifold-Adaptive",
+        "SLM-Manifold",
         "PPLS-SLM-Manifold-Adaptive",
         "PPLS-SLM-Manifold",
         "PPLS-SLM-Adaptive",
@@ -536,42 +536,48 @@ def _pick_slm_method(methods: Sequence[str]) -> Optional[str]:
 
 
 
-def generate_prediction_synthetic_metrics_table(*, artifacts_dir: Path, out_path: Path) -> None:
-    """Synthetic prediction accuracy table (MSE/MAE/R2) across 5 folds."""
+def _load_prediction_synthetic_metrics_rows(*, artifacts_dir: Path) -> List[Tuple[str, str, str, str]]:
     path = artifacts_dir / "prediction" / "synthetic" / "prediction_metrics_summary.csv"
     if not path.exists():
         raise FileNotFoundError(f"missing: {path}")
 
     df = pd.read_csv(path)
-
     df["method"] = df["method"].astype(str)
 
     slm_method = _pick_slm_method(df["method"].unique())
+    slm_display_name = "SLM-Manifold-Adaptive" if slm_method and "Adaptive" in slm_method else "SLM-Manifold"
     order = [m for m in [slm_method, "PPLS-EM", "PLSR", "Ridge"] if m is not None]
 
-
-    rows = []
+    rows: list[tuple[str, str, str, str]] = []
     for m in order:
         sub = df[df["method"] == m]
         if sub.empty:
             continue
         r = sub.iloc[0]
+        display_m = slm_display_name if m == slm_method else m
         rows.append(
             (
-                m,
+                display_m,
                 _pm_makecell_float(r["mse_mean"], r["mse_std"], fmt=".4g"),
                 _pm_makecell_float(r["mae_mean"], r["mae_std"], fmt=".4g"),
                 _pm_makecell_float(r["r2_mean"], r["r2_std"], fmt=".4g"),
             )
         )
+    return rows
+
+
+def generate_prediction_synthetic_metrics_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    """Synthetic prediction accuracy table (MSE/MAE/R2) across 5 folds."""
+    rows = _load_prediction_synthetic_metrics_rows(artifacts_dir=artifacts_dir)
 
     tex: list[str] = []
-    tex.append(r"\setlength{\tabcolsep}{4pt}")
-    tex.append(r"\begin{table}[t]\small")
+    tex.append(r"\setlength{\tabcolsep}{3pt}")
+    tex.append(r"\renewcommand{\arraystretch}{0.95}")
+    tex.append(r"\begin{table}[t]\footnotesize")
     tex.append(r"\centering")
     tex.append(r"\caption{Synthetic prediction accuracy (5-fold CV): mean $\pm$ std.}")
     tex.append(r"\label{tab:pred_synth_metrics}")
-    tex.append(r"\begin{tabular}{lccc}")
+    tex.append(r"\begin{tabular}{@{}lccc@{}}")
     tex.append(r"\toprule")
     tex.append(r"\textbf{Method} & \textbf{MSE} & \textbf{MAE} & \textbf{$R^2$} \\")
     tex.append(r"\midrule")
@@ -580,13 +586,13 @@ def generate_prediction_synthetic_metrics_table(*, artifacts_dir: Path, out_path
     tex.append(r"\bottomrule")
     tex.append(r"\end{tabular}")
     tex.append(r"\end{table}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
     tex.append("")
 
     out_path.write_text("\n".join(tex), encoding="utf-8")
 
 
-def generate_prediction_synthetic_calibration_table(*, artifacts_dir: Path, out_path: Path) -> None:
-    """Synthetic calibration comparison table (PPLS-SLM vs PPLS-EM)."""
+def _load_prediction_synthetic_calibration_rows(*, artifacts_dir: Path) -> Tuple[str, List[Tuple[float, str, str, str]]]:
     path = artifacts_dir / "prediction" / "synthetic" / "calibration_comparison.csv"
     if not path.exists():
         raise FileNotFoundError(f"missing: {path}")
@@ -596,37 +602,102 @@ def generate_prediction_synthetic_calibration_table(*, artifacts_dir: Path, out_
     def fmt_pct(x: float) -> str:
         return f"{float(x):.2f}\\%"
 
-    # Identify which SLM variant is present in the calibration CSV.
     mean_cols = [c for c in df.columns if str(c).startswith("PPLS-SLM") and str(c).endswith("_mean")]
     slm_method = _pick_slm_method([c[: -len("_mean")] for c in mean_cols]) or "PPLS-SLM"
     slm_mean_col = f"{slm_method}_mean"
     slm_std_col = f"{slm_method}_std"
+    slm_display_name = "SLM-Manifold-Adaptive" if slm_method and "Adaptive" in slm_method else "SLM-Manifold"
 
-    tex: list[str] = []
-    tex.append(r"\setlength{\tabcolsep}{4pt}")
-    tex.append(r"\begin{table}[t]\small")
-    tex.append(r"\centering")
-    tex.append(r"\caption{Synthetic calibration of predictive credible intervals (5-fold CV).}")
-    tex.append(r"\label{tab:pred_synth_calib}")
-    tex.append(r"\begin{tabular}{c|c|cc}")
-    tex.append(r"\toprule")
-    tex.append(rf"$\alpha$ & Expected & {_latex_escape(slm_method)} & PPLS-EM \\")
-    tex.append(r"\midrule")
-
+    rows: list[tuple[float, str, str, str]] = []
     for _, r in df.sort_values("alpha").iterrows():
         a = float(r["alpha"])
         expc = fmt_pct(r["expected_coverage"])
         slm = f"{fmt_pct(r[slm_mean_col])} $\\pm$ {fmt_pct(r[slm_std_col])}" if (slm_mean_col in r and slm_std_col in r) else "-"
         em = f"{fmt_pct(r['PPLS-EM_mean'])} $\\pm$ {fmt_pct(r['PPLS-EM_std'])}" if ('PPLS-EM_mean' in r and 'PPLS-EM_std' in r) else "-"
+        rows.append((a, expc, slm, em))
+    return slm_display_name, rows
+
+
+def generate_prediction_synthetic_calibration_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    """Synthetic calibration comparison table (PPLS-SLM vs PPLS-EM)."""
+    slm_display_name, rows = _load_prediction_synthetic_calibration_rows(artifacts_dir=artifacts_dir)
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{3pt}")
+    tex.append(r"\renewcommand{\arraystretch}{0.95}")
+    tex.append(r"\begin{table}[t]\footnotesize")
+    tex.append(r"\centering")
+    tex.append(r"\caption{Synthetic calibration of predictive credible intervals (5-fold CV).}")
+    tex.append(r"\label{tab:pred_synth_calib}")
+    tex.append(r"\begin{tabular}{@{}c|c|cc@{}}")
+    tex.append(r"\toprule")
+    tex.append(rf"$\alpha$ & Expected & {_latex_escape(slm_display_name)} & PPLS-EM \\")
+    tex.append(r"\midrule")
+    for a, expc, slm, em in rows:
         tex.append(f"{a:.2f} & {expc} & {slm} & {em} \\\\ ")
-
-
     tex.append(r"\bottomrule")
     tex.append(r"\end{tabular}")
     tex.append(r"\end{table}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
     tex.append("")
 
     out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
+def generate_prediction_synthetic_summary_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    rows_metrics = _load_prediction_synthetic_metrics_rows(artifacts_dir=artifacts_dir)
+    slm_display_name, rows_calib = _load_prediction_synthetic_calibration_rows(artifacts_dir=artifacts_dir)
+
+    def wrap_method_label(name: str) -> str:
+        mapping = {
+            "SLM-Manifold-Adaptive": r"\makecell{SLM-Manifold\\Adaptive}",
+            "PPLS-EM": r"\makecell{PPLS\\EM}",
+        }
+        return mapping.get(name, _latex_escape(name))
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{4pt}")
+    tex.append(r"\renewcommand{\arraystretch}{0.95}")
+    tex.append(r"\begin{table*}[t]\footnotesize")
+    tex.append(r"\centering")
+    tex.append(r"\caption{Synthetic prediction summary (5-fold CV): prediction accuracy (left) and predictive credible-interval calibration (right).}")
+    tex.append(r"\label{tab:pred_synth_summary}")
+    tex.append(r"\begin{minipage}[t]{0.40\textwidth}")
+    tex.append(r"\centering")
+    tex.append(r"\textbf{Prediction accuracy}\\[2pt]")
+    tex.append(r"\resizebox{\linewidth}{!}{%")
+    tex.append(r"\begin{tabular}{@{}lccc@{}}")
+    tex.append(r"\toprule")
+    tex.append(r"\textbf{Method} & \textbf{MSE} & \textbf{MAE} & \textbf{$R^2$} \\")
+    tex.append(r"\midrule")
+    for method, mse, mae, r2 in rows_metrics:
+        tex.append(f"{wrap_method_label(method)} & {mse} & {mae} & {r2} \\\\ ")
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}%")
+    tex.append(r"}")
+    tex.append(r"\end{minipage}\hfill")
+    tex.append(r"\begin{minipage}[t]{0.55\textwidth}")
+    tex.append(r"\centering")
+    tex.append(r"\textbf{Predictive interval calibration}\\[2pt]")
+    tex.append(r"\resizebox{\linewidth}{!}{%")
+    tex.append(r"\begin{tabular}{@{}c|c|cc@{}}")
+    tex.append(r"\toprule")
+    tex.append(rf"$\alpha$ & Expected & {wrap_method_label(slm_display_name)} & {wrap_method_label('PPLS-EM')} \\")
+    tex.append(r"\midrule")
+    for a, expc, slm, em in rows_calib:
+        tex.append(f"{a:.2f} & {expc} & {slm} & {em} \\\\ ")
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}%")
+    tex.append(r"}")
+    tex.append(r"\end{minipage}")
+
+    tex.append(r"\end{table*}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
+    tex.append("")
+
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
 
 
 def generate_prediction_synthetic_alpha_table(*, artifacts_dir: Path, out_path: Path) -> None:
@@ -641,6 +712,8 @@ def generate_prediction_synthetic_alpha_table(*, artifacts_dir: Path, out_path: 
     slm_method = _pick_slm_method(df["method"].unique())
     if slm_method is None:
         raise ValueError("No PPLS-SLM* method found in selected_shrinkage_alpha.csv")
+
+    slm_display_name = "SLM-Manifold-Adaptive" if "Adaptive" in slm_method else "SLM-Manifold"
 
     sub = df[df["method"] == slm_method].sort_values("fold")
     vals = sub["shrinkage_alpha"].astype(float).to_numpy()
@@ -662,7 +735,7 @@ def generate_prediction_synthetic_alpha_table(*, artifacts_dir: Path, out_path: 
     tex.append(r"\toprule")
     tex.append(r"\textbf{Method} & \textbf{$\gamma^*$ (mean $\pm$ std)} & \textbf{Per-fold $\gamma^*$} \\")
     tex.append(r"\midrule")
-    tex.append(rf"{_latex_escape(slm_method)} & {_pm_makecell_float(mean, std, fmt='.3g')} & {fold_cell} \\")
+    tex.append(rf"{_latex_escape(slm_display_name)} & {_pm_makecell_float(mean, std, fmt='.3g')} & {fold_cell} \\")
     tex.append(r"\bottomrule")
     tex.append(r"\end{tabular}")
     tex.append(r"\end{table}")
@@ -687,6 +760,8 @@ def generate_prediction_brca_alpha_table(*, artifacts_dir: Path, out_path: Path)
     slm_method = _pick_slm_method(summ["method"].unique())
     if slm_method is None:
         raise ValueError("No PPLS-SLM* method found in brca_prediction_summary.csv")
+
+    slm_display_name = "SLM-Manifold-Adaptive" if "Adaptive" in slm_method else "SLM-Manifold"
 
     sub_s = summ[summ["method"] == slm_method]
     if sub_s.empty:
@@ -713,7 +788,7 @@ def generate_prediction_brca_alpha_table(*, artifacts_dir: Path, out_path: Path)
     tex.append(r"\toprule")
     tex.append(r"\textbf{Method} & $r^*$ & \textbf{$\gamma^*$ (mean $\pm$ std)} & \textbf{Per-fold $\gamma^*$} \\")
     tex.append(r"\midrule")
-    tex.append(rf"{_latex_escape(slm_method)} & {r_star} & {_pm_makecell_float(mean, std, fmt='.3g')} & {fold_cell} \\")
+    tex.append(rf"{_latex_escape(slm_display_name)} & {r_star} & {_pm_makecell_float(mean, std, fmt='.3g')} & {fold_cell} \\")
     tex.append(r"\bottomrule")
     tex.append(r"\end{tabular}")
     tex.append(r"\end{table}")
@@ -722,9 +797,7 @@ def generate_prediction_brca_alpha_table(*, artifacts_dir: Path, out_path: Path)
     out_path.write_text("\n".join(tex), encoding="utf-8")
 
 
-def generate_prediction_brca_metrics_table(*, artifacts_dir: Path, out_path: Path) -> None:
-
-    """BRCA prediction accuracy table at r* chosen by CV-MSE per method."""
+def _load_prediction_brca_metrics_rows(*, artifacts_dir: Path) -> List[Tuple[str, str, str, str, str]]:
     path = artifacts_dir / "prediction" / "brca" / "brca_prediction_summary.csv"
     if not path.exists():
         raise FileNotFoundError(f"missing: {path}")
@@ -734,75 +807,152 @@ def generate_prediction_brca_metrics_table(*, artifacts_dir: Path, out_path: Pat
     df["r"] = df["r"].astype(str)
 
     slm_method = _pick_slm_method(df["method"].unique())
+    slm_display_name = "SLM-Manifold-Adaptive" if slm_method and "Adaptive" in slm_method else "SLM-Manifold"
     order = [m for m in [slm_method, "PPLS-EM", "PLSR", "Ridge"] if m is not None]
 
-
-    tex: list[str] = []
-    tex.append(r"\setlength{\tabcolsep}{4pt}")
-    tex.append(r"\begin{table}[t]\small")
-    tex.append(r"\centering")
-    tex.append(r"\caption{BRCA prediction accuracy (5-fold CV). For PPLS/PLSR, $r^*$ minimises CV-MSE.}")
-    tex.append(r"\label{tab:pred_brca_metrics}")
-    tex.append(r"\begin{tabular}{lcccc}")
-    tex.append(r"\toprule")
-    tex.append(r"\textbf{Method} & $r$ & \textbf{MSE} & \textbf{MAE} & \textbf{$R^2$} \\")
-    tex.append(r"\midrule")
-
+    rows: list[tuple[str, str, str, str, str]] = []
     for m in order:
         sub = df[df["method"] == m]
         if sub.empty:
             continue
         r0 = sub.iloc[0]
-        mse = _pm_makecell_float(r0["mse_mean"], r0["mse_std"], fmt=".4g")
-        mae = _pm_makecell_float(r0["mae_mean"], r0["mae_std"], fmt=".4g")
-        r2 = _pm_makecell_float(r0["r2_mean"], r0["r2_std"], fmt=".4g")
-        tex.append(f"{m} & {str(r0['r'])} & {mse} & {mae} & {r2} \\\\ ")
+        display_m = slm_display_name if m == slm_method else m
+        rows.append(
+            (
+                display_m,
+                str(r0["r"]),
+                _pm_makecell_float(r0["mse_mean"], r0["mse_std"], fmt=".4g"),
+                _pm_makecell_float(r0["mae_mean"], r0["mae_std"], fmt=".4g"),
+                _pm_makecell_float(r0["r2_mean"], r0["r2_std"], fmt=".4g"),
+            )
+        )
+    return rows
 
+
+def generate_prediction_brca_metrics_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    """BRCA prediction accuracy table at r* chosen by CV-MSE per method."""
+    rows = _load_prediction_brca_metrics_rows(artifacts_dir=artifacts_dir)
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{3pt}")
+    tex.append(r"\renewcommand{\arraystretch}{0.95}")
+    tex.append(r"\begin{table}[t]\footnotesize")
+    tex.append(r"\centering")
+    tex.append(r"\caption{BRCA prediction accuracy (5-fold CV). For PPLS/PLSR, $r^*$ minimises CV-MSE.}")
+    tex.append(r"\label{tab:pred_brca_metrics}")
+    tex.append(r"\begin{tabular}{@{}lcccc@{}}")
+    tex.append(r"\toprule")
+    tex.append(r"\textbf{Method} & $r$ & \textbf{MSE} & \textbf{MAE} & \textbf{$R^2$} \\")
+    tex.append(r"\midrule")
+
+    for method, r_star, mse, mae, r2 in rows:
+        tex.append(f"{method} & {r_star} & {mse} & {mae} & {r2} \\\\ ")
 
     tex.append(r"\bottomrule")
     tex.append(r"\end{tabular}")
     tex.append(r"\end{table}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
     tex.append("")
 
     out_path.write_text("\n".join(tex), encoding="utf-8")
 
 
-def generate_prediction_brca_calibration_table(*, artifacts_dir: Path, out_path: Path) -> None:
-    """BRCA calibration table for PPLS-SLM at the selected r*."""
+def _load_prediction_brca_calibration_rows(*, artifacts_dir: Path) -> List[Tuple[float, str, List[str], str]]:
     path = artifacts_dir / "prediction" / "brca" / "brca_calibration_table.csv"
     if not path.exists():
         raise FileNotFoundError(f"missing: {path}")
 
     df = pd.read_csv(path)
-
-    # Expect columns: Alpha, Expected Coverage, Fold 1..Fold 5, Mean
     folds = [f"Fold {i}" for i in range(1, 6)]
 
-    tex: list[str] = []
-    tex.append(r"\setlength{\tabcolsep}{3pt}")
-    tex.append(r"\begin{table}[t]\small")
-    tex.append(r"\centering")
-    tex.append(r"\caption{BRCA calibration of PPLS-SLM predictive credible intervals (element-wise coverage, \%).}")
-    tex.append(r"\label{tab:pred_brca_calib}")
-    tex.append(r"\begin{tabular}{c|c|ccccc|c}")
-    tex.append(r"\toprule")
-    tex.append(r"$\alpha$ & Expected & Fold 1 & Fold 2 & Fold 3 & Fold 4 & Fold 5 & Mean \\")
-    tex.append(r"\midrule")
-
+    rows: list[tuple[float, str, list[str], str]] = []
     for _, r in df.iterrows():
         a = float(r["Alpha"])
         expc = _latex_escape(str(r["Expected Coverage"]))
         vals = [_latex_escape(str(r[c])) for c in folds]
         mean = _latex_escape(str(r["Mean"]))
-        tex.append(f"{a:.2f} & {expc} & " + " & ".join(vals) + f" & {mean} \\\\ ")
+        rows.append((a, expc, vals, mean))
+    return rows
 
+
+def generate_prediction_brca_calibration_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    """BRCA calibration table for PPLS-SLM at the selected r*."""
+    rows = _load_prediction_brca_calibration_rows(artifacts_dir=artifacts_dir)
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{2pt}")
+    tex.append(r"\renewcommand{\arraystretch}{0.95}")
+    tex.append(r"\begin{table}[t]\scriptsize")
+    tex.append(r"\centering")
+    tex.append(r"\caption{BRCA calibration of SLM-Manifold predictive intervals (element-wise coverage, \%).}")
+    tex.append(r"\label{tab:pred_brca_calib}")
+    tex.append(r"\begin{tabular}{@{}c|c|ccccc|c@{}}")
+    tex.append(r"\toprule")
+    tex.append(r"$\alpha$ & Expected & Fold 1 & Fold 2 & Fold 3 & Fold 4 & Fold 5 & Mean \\")
+    tex.append(r"\midrule")
+
+    for a, expc, vals, mean in rows:
+        tex.append(f"{a:.2f} & {expc} & " + " & ".join(vals) + f" & {mean} \\\\ ")
 
     tex.append(r"\bottomrule")
     tex.append(r"\end{tabular}")
     tex.append(r"\end{table}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
     tex.append("")
 
     out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
+def generate_prediction_brca_summary_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    rows_metrics = _load_prediction_brca_metrics_rows(artifacts_dir=artifacts_dir)
+    rows_calib = _load_prediction_brca_calibration_rows(artifacts_dir=artifacts_dir)
+
+    def wrap_method_label(name: str) -> str:
+        if name == "SLM-Manifold-Adaptive":
+            return r"\makecell{SLM-Manifold\\Adaptive}"
+        return _latex_escape(name)
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{4pt}")
+    tex.append(r"\renewcommand{\arraystretch}{0.95}")
+    tex.append(r"\begin{table*}[t]\footnotesize")
+    tex.append(r"\centering")
+    tex.append(r"\caption{BRCA prediction summary (5-fold CV): prediction accuracy (left) and predictive-interval calibration (right).}")
+    tex.append(r"\label{tab:pred_brca_summary}")
+    tex.append(r"\begin{minipage}[t]{0.42\textwidth}")
+    tex.append(r"\centering")
+    tex.append(r"\textbf{Prediction accuracy}\\[2pt]")
+    tex.append(r"\resizebox{\linewidth}{!}{%")
+    tex.append(r"\begin{tabular}{@{}lcccc@{}}")
+    tex.append(r"\toprule")
+    tex.append(r"\textbf{Method} & $r$ & \textbf{MSE} & \textbf{MAE} & \textbf{$R^2$} \\")
+    tex.append(r"\midrule")
+    for method, r_star, mse, mae, r2 in rows_metrics:
+        tex.append(f"{wrap_method_label(method)} & {r_star} & {mse} & {mae} & {r2} \\\\ ")
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}%")
+    tex.append(r"}")
+    tex.append(r"\end{minipage}\hfill")
+    tex.append(r"\begin{minipage}[t]{0.54\textwidth}")
+    tex.append(r"\centering")
+    tex.append(r"\textbf{Predictive interval calibration}\\[2pt]")
+    tex.append(r"\resizebox{\linewidth}{!}{%")
+    tex.append(r"\begin{tabular}{@{}c|c|ccccc|c@{}}")
+    tex.append(r"\toprule")
+    tex.append(r"$\alpha$ & Expected & Fold 1 & Fold 2 & Fold 3 & Fold 4 & Fold 5 & Mean \\")
+    tex.append(r"\midrule")
+    for a, expc, vals, mean in rows_calib:
+        tex.append(f"{a:.2f} & {expc} & " + " & ".join(vals) + f" & {mean} \\\\ ")
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}%")
+    tex.append(r"}")
+    tex.append(r"\end{minipage}")
+    tex.append(r"\end{table*}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
+    tex.append("")
+
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
 
 
 # -----------------------------------------------------------------------------
@@ -1350,8 +1500,10 @@ def main() -> None:
     # Synthetic
     generate_prediction_synthetic_metrics_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_prediction_synth_metrics.tex")
     generate_prediction_synthetic_calibration_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_prediction_synth_calibration.tex")
+    generate_prediction_synthetic_summary_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_prediction_synth_summary.tex")
 
     syn_dir = artifacts_dir / "prediction" / "synthetic"
+
     if (syn_dir / "selected_shrinkage_alpha.csv").exists():
         generate_prediction_synthetic_alpha_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_prediction_synth_alpha.tex")
     else:
@@ -1373,8 +1525,11 @@ def main() -> None:
 
     if (brca_dir / "brca_calibration_table.csv").exists():
         generate_prediction_brca_calibration_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_prediction_brca_calibration.tex")
+        if (brca_dir / "brca_prediction_summary.csv").exists():
+            generate_prediction_brca_summary_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_prediction_brca_summary.tex")
     else:
         print(f"[SKIP] BRCA calibration table (missing: {brca_dir / 'brca_calibration_table.csv'})")
+
 
     # Model selection tables (latent dimension r)
     ms_dir = artifacts_dir / "model_selection"
