@@ -11,6 +11,7 @@ The implementation is intentionally "thin": core logic lives in `ppls_slm.*` mod
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
+
 
 import numpy as np
 
@@ -91,7 +93,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Override output.base_dir (optional)",
     )
+    parser.add_argument(
+        "--noise-level",
+        type=str,
+        action="append",
+        default=None,
+        help=(
+            "Run only selected noise level(s). Example: --noise-level low  or  --noise-level high. "
+            "You can repeat the flag or pass a comma-separated list."
+        ),
+    )
+    parser.add_argument(
+        "--n-trials",
+        type=int,
+        default=None,
+        help="Override experiment.n_trials (useful for smoke tests)",
+    )
     return parser.parse_args(argv)
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -106,9 +125,41 @@ def main(argv: list[str] | None = None) -> int:
     print("Loading configuration...")
     config = load_config_with_defaults(config_path, defaults=_DEFAULTS)
 
+    # Optional override for quick smoke tests.
+    if args.n_trials is not None:
+        config = copy.deepcopy(config)
+        config.setdefault("experiment", {})["n_trials"] = int(args.n_trials)
+
+    # Optionally restrict to selected noise levels (so low/high can be run separately).
+    if args.noise_level:
+        requested: list[str] = []
+        for item in args.noise_level:
+            for part in str(item).split(","):
+                name = part.strip()
+                if name:
+                    requested.append(name)
+
+        # stable de-dup
+        requested = list(dict.fromkeys(requested))
+
+        noise_levels = config.get("data_generation", {}).get("noise_levels", {})
+        if not isinstance(noise_levels, dict) or len(noise_levels) == 0:
+            noise_levels = _DEFAULTS.get("data_generation", {}).get("noise_levels", {})
+
+        unknown = [n for n in requested if n not in noise_levels]
+        if unknown:
+            raise ValueError(
+                f"Unknown noise level(s): {unknown}. Available: {list(noise_levels.keys())}"
+            )
+
+        config = copy.deepcopy(config)
+        config.setdefault("data_generation", {})["noise_levels"] = {k: noise_levels[k] for k in requested}
+        print(f"Restricting run to noise level(s): {', '.join(requested)}")
+
     if not validate_configuration(config):
         print("Configuration validation failed. Exiting.")
         return 1
+
 
     # Determine base directory.
     base_dir = args.base_dir or config.get("output", {}).get("base_dir") or os.getcwd()
@@ -484,55 +535,94 @@ def run_parameter_estimation_stage(config: Dict, base_dir: str) -> bool:
 
 
 def run_visualization_stage(config: Dict, base_dir: str) -> bool:
-    figures_dir = os.path.join(base_dir, "figures")
-    results_dir = os.path.join(base_dir, "results")
-    data_dir = os.path.join(base_dir, "data")
+    """Generate visualizations for each configured noise level.
+
+    For backward compatibility, the low-noise setting uses:
+      - figures -> base_dir/figures
+      - results -> base_dir/results
+      - data    -> base_dir/data
+
+    Other levels use:
+      - figures -> base_dir/figures_<level>
+      - results -> base_dir/results_<level>
+      - data    -> base_dir/data_<level>
+    """
 
     force = config.get("output", {}).get("force_visualization", False)
     figure_format = config.get("output", {}).get("figure_format", "pdf")
 
-    if not force and check_directory_status(figures_dir):
-        print("Figures directory exists and is non-empty. Skipping visualization.")
-        logging.info("Skipping visualization - figures already exist")
-        return False
+    noise_levels = config.get("data_generation", {}).get("noise_levels", {})
+    if not isinstance(noise_levels, dict) or len(noise_levels) == 0:
+        noise_levels = {"low": {"sigma_e2": 0.1, "sigma_f2": 0.1, "sigma_h2": 0.05}}
 
-    if not check_directory_status(results_dir):
-        raise FileNotFoundError("Results directory is empty or doesn't exist. Run parameter estimation first.")
-    if not check_directory_status(data_dir):
-        raise FileNotFoundError("Data directory is empty or doesn't exist. Run data generation first.")
+    generated_any = False
 
-    print("Stage 3: Generating visualizations...")
-    logging.info("Starting visualization stage")
+    for level_name in noise_levels.keys():
+        if level_name == "low":
+            figures_dir = os.path.join(base_dir, "figures")
+            results_dir = os.path.join(base_dir, "results")
+            data_dir = os.path.join(base_dir, "data")
+        else:
+            figures_dir = os.path.join(base_dir, f"figures_{level_name}")
+            results_dir = os.path.join(base_dir, f"results_{level_name}")
+            data_dir = os.path.join(base_dir, f"data_{level_name}")
 
-    os.makedirs(figures_dir, exist_ok=True)
-    visualizer = PPLSVisualizer(base_dir, figure_format=figure_format)
+        if not force and check_directory_status(figures_dir):
+            print(f"Figures for noise='{level_name}' exist and are non-empty. Skipping visualization.")
+            logging.info(f"Skipping visualization - figures already exist (noise='{level_name}')")
+            continue
 
-    import pickle
+        if not check_directory_status(results_dir):
+            raise FileNotFoundError(
+                f"Results directory for noise='{level_name}' is empty or doesn't exist: {results_dir}. "
+                "Run parameter estimation first."
+            )
+        if not check_directory_status(data_dir):
+            raise FileNotFoundError(
+                f"Data directory for noise='{level_name}' is empty or doesn't exist: {data_dir}. "
+                "Run data generation first."
+            )
 
-    results_path = os.path.join(results_dir, "experiment_results.pkl")
-    with open(results_path, "rb") as f:
-        experiment_results = pickle.load(f)
+        print(f"Stage 3: Generating visualizations (noise='{level_name}')...")
+        logging.info(f"Starting visualization stage (noise='{level_name}')")
 
-    visualizer.create_results_summary(experiment_results)
+        os.makedirs(figures_dir, exist_ok=True)
+        visualizer = PPLSVisualizer(
+            base_dir,
+            figure_format=figure_format,
+            figure_dir=figures_dir,
+            data_dir=data_dir,
+            results_dir=results_dir,
+        )
 
-    if experiment_results.get("trial_results"):
-        first_trial = experiment_results["trial_results"][0]
-        for component_idx in range(config["model"]["r"]):
-            visualizer.plot_loading_comparison(first_trial, component_idx)
+        import pickle
 
-    if "analysis" in experiment_results:
-        visualizer.plot_parameter_recovery(experiment_results["analysis"])
+        results_path = os.path.join(results_dir, "experiment_results.pkl")
+        with open(results_path, "rb") as f:
+            experiment_results = pickle.load(f)
 
-    if "trial_results" in experiment_results:
-        visualizer.plot_convergence_history(experiment_results["trial_results"])
+        visualizer.create_results_summary(experiment_results)
 
-    visualizer.save_all_figures()
+        if experiment_results.get("trial_results"):
+            first_trial = experiment_results["trial_results"][0]
+            for component_idx in range(config["model"]["r"]):
+                visualizer.plot_loading_comparison(first_trial, component_idx)
 
-    print("[OK] Visualizations generated")
-    print(f"[OK] Figures saved to: {figures_dir}")
-    logging.info("Visualization completed")
+        if "analysis" in experiment_results:
+            visualizer.plot_parameter_recovery(experiment_results["analysis"])
 
-    return True
+        if "trial_results" in experiment_results:
+            visualizer.plot_convergence_history(experiment_results["trial_results"])
+
+        visualizer.save_all_figures()
+
+        print(f"[OK] Visualizations generated (noise='{level_name}')")
+        print(f"[OK] Figures saved to: {figures_dir}")
+        logging.info(f"Visualization completed (noise='{level_name}')")
+
+        generated_any = True
+
+    return generated_any
 
 
 def check_directory_status(directory: str) -> bool:

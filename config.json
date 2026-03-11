@@ -1,9 +1,9 @@
 {
   "model": {
-    "p": 20,
-    "q": 20,
-    "r": 3,
-    "n_samples": 500
+    "p": 200,
+    "q": 200,
+    "r": 5,
+    "n_samples": 2000
   },
   "data_generation": {
     "noise_levels": {
@@ -167,11 +167,11 @@
     },
     "prediction": {
       "thread_limit": 1,
-      "output_dir": "results_prediction",
-      "p": 100,
-      "q": 100,
-      "r": 20,
-      "n_samples": 120,
+      "output_dir": "results_prediction_hd",
+      "p": 200,
+      "q": 200,
+      "r": 5,
+      "n_samples": 2000,
       "n_folds": 5,
       "n_starts": 8,
       "seed": 42,
@@ -182,6 +182,7 @@
       "em_tol": 1e-4,
       "plot": true,
       "no_baselines": false,
+
 
       "parallel_folds": true,
       "fold_workers": 5,

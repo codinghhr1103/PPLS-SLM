@@ -64,9 +64,14 @@ def main() -> int:
     copied += int(copy_file(out / "results" / "experiment_summary.json", sim_dir / "experiment_summary_low.json"))
     copied += int(copy_file(out / "results_high" / "experiment_summary.json", sim_dir / "experiment_summary_high.json"))
 
-    # Figures/tables exported by visualization stage (low-noise only)
+    # Figures/tables exported by visualization stage.
+    # Keep backward compatibility: low-noise figures are synced into `simulation/figures/`.
     copied += copy_glob(out / "figures", "*.png", sim_dir / "figures")
     copied += copy_glob(out / "figures", "*.xlsx", sim_dir / "figures")
+
+    # High-noise figures may share filenames with low-noise ones, so store separately.
+    copied += copy_glob(out / "figures_high", "*.png", sim_dir / "figures_high")
+    copied += copy_glob(out / "figures_high", "*.xlsx", sim_dir / "figures_high")
 
     # --- Large-scale parameter recovery ---
     scale_out = out / "parameter_recovery_scale" / "full"

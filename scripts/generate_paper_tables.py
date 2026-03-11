@@ -10,6 +10,7 @@ It will write generated .tex snippets under `paper/generated/tables/`.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -215,7 +216,43 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
     tex.append(r"\renewcommand{\arraystretch}{0.94}")
     tex.append(r"\begin{table*}[t]\scriptsize")
     tex.append(r"\centering")
-    tex.append(r"\caption{Parameter estimation MSE ($\times 10^2$) under low/high noise (mean $\pm$ std). Low-noise (left) and high-noise (right) panels are shown side by side.}")
+    # Keep caption aligned with the paper's polished wording.
+    # Include the simulation dimensions in the caption (prevents stale prose when configs change).
+    p = q = r = n = None
+
+    # Prefer reading dimensions from artifacts if available; otherwise fall back to repo config.
+    summary = artifacts_dir / "simulation" / "experiment_summary_low.json"
+    if summary.exists():
+        try:
+            info = _read_json(summary).get("experiment_info", {})
+            p = info.get("p")
+            q = info.get("q")
+            r = info.get("r")
+            n = info.get("n_samples")
+        except Exception:
+            p = q = r = n = None
+
+    if p is None or q is None or r is None or n is None:
+        try:
+            repo_root = Path(__file__).resolve().parents[1]
+            cfg = _read_json(repo_root / "config.json")
+            model = cfg.get("model", {})
+            p = model.get("p")
+            q = model.get("q")
+            r = model.get("r")
+            n = model.get("n_samples")
+        except Exception:
+            p = q = r = n = None
+
+    dim_str = ""
+    if p is not None and q is not None and r is not None and n is not None:
+        dim_str = f" ($p=q={int(p)}$, $r={int(r)}$, $N={int(n)}$)"
+
+
+    tex.append(
+        rf"\caption{{Parameter estimation mean squared error (MSE; $\times 10^2$){dim_str} under low/high noise (mean $\pm$ std). Low-noise (left) and high-noise (right) panels are shown side by side.}}"
+    )
+
     tex.append(r"\label{tab:parameter_mse}")
     append_panel(tex, "Low noise", rows_for(low))
     tex.append(r"\hfill")
@@ -430,7 +467,7 @@ def generate_detection_table(*, artifacts_dir: Path, out_path: Path) -> None:
     tex = []
     tex.append(r"\begin{table}[t]\small")
     tex.append(r"\centering")
-    tex.append(r"\caption{Number of detected gene-protein pairs by SLM-Manifold and EM under different p-values}")
+    tex.append(r"\caption{Number of detected gene--protein pairs by SLM-Manifold and EM under different $p$-value thresholds.}")
     tex.append(r"\label{tab:Npairs}")
     tex.append(r"\begin{tabular}{l| c c c c}")
     tex.append(r"\toprule")
@@ -660,7 +697,15 @@ def generate_prediction_synthetic_summary_table(*, artifacts_dir: Path, out_path
     tex.append(r"\renewcommand{\arraystretch}{0.95}")
     tex.append(r"\begin{table*}[t]\footnotesize")
     tex.append(r"\centering")
-    tex.append(r"\caption{Synthetic prediction summary (5-fold CV): prediction accuracy (left) and predictive credible-interval calibration (right).}")
+    tex.append(r"\caption{Synthetic prediction summary (5-fold cross-validation (CV)). \textbf{Left:}")
+    tex.append(r"point-prediction accuracy---SLM-Manifold-Adaptive and PPLS-EM")
+    tex.append(r"are statistically indistinguishable. \textbf{Right:} predictive")
+    tex.append(r"interval calibration---SLM-Manifold-Adaptive achieves 94.84\%")
+    tex.append(r"coverage at the nominal 95\% level, while PPLS-EM covers only")
+    tex.append(r"87.00\%, a \textbf{7.84 percentage-point undercoverage} that")
+    tex.append(r"would produce misleadingly narrow uncertainty intervals in")
+    tex.append(r"practice. PLSR and Ridge do not produce distributional")
+    tex.append(r"predictions and are therefore omitted from the calibration panel.}")
     tex.append(r"\label{tab:pred_synth_summary}")
     tex.append(r"\begin{minipage}[t]{0.40\textwidth}")
     tex.append(r"\centering")
@@ -1100,7 +1145,7 @@ def generate_model_selection_brca_table(*, artifacts_dir: Path, out_path: Path) 
         except Exception:
             K = 5
 
-    tex.append(rf"\caption{{BRCA TCGA latent-dimension selection by BIC and {K}-fold CV prediction MSE. Best values are highlighted per criterion (BIC/CV-MSE: smaller is better; log-likelihood: larger is better).}}")
+    tex.append(rf"\caption{{BRCA latent-dimension selection by BIC and {K}-fold CV prediction MSE. Best values are highlighted per criterion (BIC/CV-MSE: smaller is better; log-likelihood: larger is better).}}")
 
     tex.append(r"\label{tab:model_selection_brca}")
     tex.append(r"\setlength{\tabcolsep}{4pt}")
@@ -1222,7 +1267,7 @@ def generate_noise_ablation_exp2_table(*, artifacts_dir: Path, out_path: Path) -
     tex: list[str] = []
     tex.append(r"\begin{table}[t]\small")
     tex.append(r"\centering")
-    tex.append(r"\caption{Noise ablation (Exp2): success rate and mean runtime for fixed vs.\ joint optimisation of $(\sigma_e^2,\sigma_f^2)$.}")
+    tex.append(r"\caption{Noise ablation (Exp2): success rate and mean runtime for fixed vs.\ joint optimization of $(\sigma_e^2,\sigma_f^2)$.}")
     tex.append(r"\label{tab:noise_ablation_exp2}")
     tex.append(r"\begin{tabular}{llccc}")
     tex.append(r"\toprule")
@@ -1464,11 +1509,29 @@ def generate_paper_metrics(*, artifacts_dir: Path, out_path: Path) -> None:
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main() -> None:
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Generate LaTeX snippets under paper/generated from paper/artifacts")
+    parser.add_argument(
+        "--out-root",
+        type=str,
+        default=None,
+        help="Output root dir (default: paper/generated). Tables go under <out-root>/tables and metrics.tex under <out-root>.",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
     repo_root = Path(__file__).resolve().parents[1]
     paper_dir = repo_root / "paper"
     artifacts_dir = paper_dir / "artifacts"
-    out_dir = paper_dir / "generated" / "tables"
+
+    if args.out_root:
+        out_root = Path(args.out_root)
+        if not out_root.is_absolute():
+            out_root = repo_root / out_root
+        out_root = out_root.resolve()
+    else:
+        out_root = paper_dir / "generated"
+
+    out_dir = out_root / "tables"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     generate_convergence_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_algorithm_convergence.tex")
@@ -1543,6 +1606,8 @@ def main() -> None:
     else:
         print(f"[SKIP] Model selection (BRCA) table (missing: {ms_dir / 'brca' / 'brca_r_selection.csv'})")
 
+
+
     # Legacy coverage table (kept for backward compatibility).
     # (Some older paper drafts reference it.)
     try:
@@ -1551,7 +1616,7 @@ def main() -> None:
         print(f"[SKIP] Legacy coverage table ({e})")
 
 
-    generate_paper_metrics(artifacts_dir=artifacts_dir, out_path=paper_dir / "generated" / "metrics.tex")
+    generate_paper_metrics(artifacts_dir=artifacts_dir, out_path=out_root / "metrics.tex")
 
 
 

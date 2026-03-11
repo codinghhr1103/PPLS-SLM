@@ -9,14 +9,17 @@ by optimizing on the product manifold
 
     St(p, r) × St(q, r) × R^r × R^r × R
 
-using a log-parameterization for positive diagonal/scalar parameters:
+using a smooth positive reparameterization for diagonal/scalar parameters.
 
-    theta_t2 = exp(theta_t2_tilde)   (latent variances)
-    b        = exp(b_tilde)          (regression coefficients)
-    sigma_h2 = exp(sigma_h2_tilde)   (latent noise)
+We use a numerically stable softplus transform to avoid overflow in high-dimensional
+or difficult runs:
 
-This matches the paper's default protocol (positivity via log-coordinates) while
-keeping (sigma_e2, sigma_f2) fixed at spectral pre-estimates.
+    theta_t2 = softplus(theta_t2_tilde) + eps   (latent variances)
+    b        = softplus(b_tilde)        + eps   (regression coefficients)
+    sigma_h2 = softplus(sigma_h2_tilde) + eps   (latent noise)
+
+This keeps strict positivity while preventing `exp` overflow. (sigma_e2, sigma_f2)
+remain fixed at spectral pre-estimates.
 
 Implementation notes
 --------------------
@@ -39,6 +42,34 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import numpy as np
 
 from .ppls_model import PPLSObjective
+
+
+_POS_EPS = 1e-8
+
+
+def _softplus(x: np.ndarray) -> np.ndarray:
+    """Stable softplus: log(1 + exp(x)) without overflow."""
+    x = np.asarray(x, dtype=float)
+    return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0.0)
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    """Stable sigmoid for chain rule with softplus."""
+    x = np.asarray(x, dtype=float)
+    out = np.empty_like(x, dtype=float)
+    pos = x >= 0
+    out[pos] = 1.0 / (1.0 + np.exp(-x[pos]))
+    ex = np.exp(x[~pos])
+    out[~pos] = ex / (1.0 + ex)
+    return out
+
+
+def _inv_softplus(y: np.ndarray) -> np.ndarray:
+    """Approximate inverse of softplus for y>0 (stable across regimes)."""
+    y = np.asarray(y, dtype=float)
+    y = np.maximum(y, 1e-12)
+    # For large y, softplus(x) ~ x.
+    return np.where(y > 20.0, y, np.log(np.expm1(y)))
 
 
 def _qr_with_positive_diagonal(A: np.ndarray) -> np.ndarray:
@@ -246,23 +277,27 @@ def solve_slm_manifold_single_start(
 
     @function.numpy(manifold)
     def cost(W, C, theta_t2_tilde, b_tilde, sigma_h2_tilde):
-        theta_t2_v = np.exp(np.asarray(theta_t2_tilde, dtype=float).reshape(-1))
-        b_v = np.exp(np.asarray(b_tilde, dtype=float).reshape(-1))
-        sh2 = float(np.exp(np.asarray(sigma_h2_tilde, dtype=float).reshape(-1)[0]))
+        theta_t2_v = _softplus(np.asarray(theta_t2_tilde, dtype=float)).reshape(-1) + _POS_EPS
+        b_v = _softplus(np.asarray(b_tilde, dtype=float)).reshape(-1) + _POS_EPS
+        sh2 = float(_softplus(np.asarray(sigma_h2_tilde, dtype=float)).reshape(-1)[0] + _POS_EPS)
         return _objective_from_parts(objective, W, C, theta_t2_v, b_v, sh2)
 
     @function.numpy(manifold)
     def egrad(W, C, theta_t2_tilde, b_tilde, sigma_h2_tilde):
-        theta_t2_v = np.exp(np.asarray(theta_t2_tilde, dtype=float).reshape(-1))
-        b_v = np.exp(np.asarray(b_tilde, dtype=float).reshape(-1))
-        sh2 = float(np.exp(np.asarray(sigma_h2_tilde, dtype=float).reshape(-1)[0]))
+        theta_t2_tilde_v = np.asarray(theta_t2_tilde, dtype=float).reshape(-1)
+        b_tilde_v = np.asarray(b_tilde, dtype=float).reshape(-1)
+        sh2_tilde_s = float(np.asarray(sigma_h2_tilde, dtype=float).reshape(-1)[0])
+
+        theta_t2_v = _softplus(theta_t2_tilde_v) + _POS_EPS
+        b_v = _softplus(b_tilde_v) + _POS_EPS
+        sh2 = float(_softplus(np.asarray([sh2_tilde_s]))[0] + _POS_EPS)
 
         gW, gC, gtheta, gb, gsh2 = _euclidean_gradient_from_parts(objective, W, C, theta_t2_v, b_v, sh2)
 
-        # Chain rule for log-coordinates: dL/dtilde = var * dL/dvar.
-        gtheta_tilde = np.asarray(gtheta, dtype=float).reshape(-1) * theta_t2_v
-        gb_tilde = np.asarray(gb, dtype=float).reshape(-1) * b_v
-        gsh2_tilde = float(np.asarray(gsh2, dtype=float).reshape(-1)[0]) * sh2
+        # Chain rule for softplus: d softplus(x) / dx = sigmoid(x).
+        gtheta_tilde = np.asarray(gtheta, dtype=float).reshape(-1) * _sigmoid(theta_t2_tilde_v)
+        gb_tilde = np.asarray(gb, dtype=float).reshape(-1) * _sigmoid(b_tilde_v)
+        gsh2_tilde = float(np.asarray(gsh2, dtype=float).reshape(-1)[0]) * float(_sigmoid(np.asarray([sh2_tilde_s]))[0])
 
         return (
             gW,
@@ -309,9 +344,9 @@ def solve_slm_manifold_single_start(
 
     W_hat, C_hat, theta_t2_tilde_hat, b_tilde_hat, sh2_tilde_arr = point
 
-    theta_t2_hat_v = np.exp(np.asarray(theta_t2_tilde_hat, dtype=float).reshape(-1))
-    b_hat_v = np.exp(np.asarray(b_tilde_hat, dtype=float).reshape(-1))
-    sigma_h2_hat = float(np.exp(np.asarray(sh2_tilde_arr, dtype=float).reshape(-1)[0]))
+    theta_t2_hat_v = _softplus(np.asarray(theta_t2_tilde_hat, dtype=float)).reshape(-1) + _POS_EPS
+    b_hat_v = _softplus(np.asarray(b_tilde_hat, dtype=float)).reshape(-1) + _POS_EPS
+    sigma_h2_hat = float(_softplus(np.asarray(sh2_tilde_arr, dtype=float)).reshape(-1)[0] + _POS_EPS)
 
 
     W_hat, C_hat, theta_t2_hat_v, b_hat_v = _enforce_identifiability_order(

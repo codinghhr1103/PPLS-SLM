@@ -407,9 +407,10 @@ class PPLSExperiment:
         """Load experimental data and ground truth parameters from data directory."""
         data_dir = self.data_dir
         
-        # Load data arrays
-        self.X_trials = np.load(os.path.join(data_dir, 'X_trials.npy'))
-        self.Y_trials = np.load(os.path.join(data_dir, 'Y_trials.npy'))
+        # Load data arrays.
+        # Use memory mapping to avoid loading the full tensor into RAM for high-dimensional runs.
+        self.X_trials = np.load(os.path.join(data_dir, 'X_trials.npy'), mmap_mode='r')
+        self.Y_trials = np.load(os.path.join(data_dir, 'Y_trials.npy'), mmap_mode='r')
         
         # Load ground truth parameters
         with open(os.path.join(data_dir, 'ground_truth.pkl'), 'rb') as f:
@@ -1297,7 +1298,7 @@ class PerformanceMetrics:
         em_metrics_list: List[Dict],
         ecm_metrics_list: List[Dict],
     ) -> pd.DataFrame:
-        """Generate summary table (paper-style parameter MSE, \(\times 10^2\))."""
+        r"""Generate summary table (paper-style parameter MSE, \(\times 10^2\))."""
         params = ['W', 'C', 'B', 'Sigma_t', 'sigma_h2']
 
         table_data = []

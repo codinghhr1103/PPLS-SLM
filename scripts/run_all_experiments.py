@@ -320,6 +320,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             _rm_tree(out_base / "results")
             _rm_tree(out_base / "results_high")
             _rm_tree(out_base / "figures")
+            _rm_tree(out_base / "figures_high")
 
             _rm_tree((repo_root / str(assoc_out)).resolve())
             _rm_tree((repo_root / str(pred_out)).resolve())

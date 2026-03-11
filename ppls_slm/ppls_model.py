@@ -135,8 +135,9 @@ class PPLSObjective:
         """
         val = (self.p - self.r) * np.log(se2) + (self.q - self.r) * np.log(sf2)
         for i in range(self.r):
-            D_i = (sf2 + sh2) * (theta_t2[i] + se2) + b[i] ** 2 * theta_t2[i] * se2
-            if D_i <= 0:
+            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                D_i = (sf2 + sh2) * (theta_t2[i] + se2) + b[i] ** 2 * theta_t2[i] * se2
+            if (not np.isfinite(D_i)) or (D_i <= 0):
                 return 1e10
             val += np.log(D_i)
         return val
@@ -148,12 +149,17 @@ class PPLSObjective:
         """
         val = np.trace(self.S_xx) / se2 + np.trace(self.S_yy) / sf2
         for i in range(self.r):
-            D_i = (sf2 + sh2) * (theta_t2[i] + se2) + b[i] ** 2 * theta_t2[i] * se2
-            if abs(D_i) < 1e-15:
+            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                D_i = (sf2 + sh2) * (theta_t2[i] + se2) + b[i] ** 2 * theta_t2[i] * se2
+            if (not np.isfinite(D_i)) or (abs(D_i) < 1e-15):
                 return 1e10
-            M2 = (sf2 + sh2) * theta_t2[i] / D_i
-            M4 = (sh2 * (theta_t2[i] + se2) + b[i] ** 2 * theta_t2[i] * se2) / D_i
-            M6 = b[i] * theta_t2[i] / D_i
+
+            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                M2 = (sf2 + sh2) * theta_t2[i] / D_i
+                M4 = (sh2 * (theta_t2[i] + se2) + b[i] ** 2 * theta_t2[i] * se2) / D_i
+                M6 = b[i] * theta_t2[i] / D_i
+            if (not np.isfinite(M2)) or (not np.isfinite(M4)) or (not np.isfinite(M6)):
+                return 1e10
 
             wi = W[:, i:i + 1]
             ci = C[:, i:i + 1]
@@ -289,11 +295,12 @@ def estimate_noise_variance(
     r: int,
     mp_correction_threshold: float = 0.1,
 ) -> float:
-    """\
+    r"""
     基于特征值分离的噪声方差估计器。
 
     利用 PPLS 模型中协方差矩阵 \(\Sigma = W\Sigma_tW^\top + \sigma^2 I\) 的谱结构，
     取样本协方差矩阵最小 \(d-r\) 个特征值的均值来估计 \(\sigma^2\)。
+
 
     Parameters
     ----------
@@ -335,7 +342,7 @@ def estimate_noise_variance(
 
 
 class NoiseEstimator:
-    """\
+    r"""
     Spectral pre-estimation of observation noise variances (per-dimension).
 
     Under the PPLS marginal structure

@@ -66,22 +66,31 @@ class PPLSVisualizer:
     Creates publication-ready figures for parameter estimation comparison.
     """
     
-    def __init__(self, base_dir: str, figure_format: str = 'pdf'):
-        """
-        Initialize visualizer with base directory and settings.
-        
-        Parameters:
+    def __init__(
+        self,
+        base_dir: str,
+        figure_format: str = 'pdf',
+        *,
+        figure_dir: Optional[str] = None,
+        data_dir: Optional[str] = None,
+        results_dir: Optional[str] = None,
+    ):
+        """Initialize visualizer.
+
+        Parameters
         -----------
         base_dir : str
-            Base directory containing data and results
+            Base directory (used for defaults and metadata)
         figure_format : str
             Output format for figures ('pdf', 'png', 'svg')
+        figure_dir, data_dir, results_dir : Optional[str]
+            Override directories (useful for multi-noise runs).
         """
         self.base_dir = base_dir
         self.figure_format = figure_format
-        self.figure_dir = os.path.join(base_dir, 'figures')
-        self.data_dir = os.path.join(base_dir, 'data')
-        self.results_dir = os.path.join(base_dir, 'results')
+        self.figure_dir = str(figure_dir) if figure_dir is not None else os.path.join(base_dir, 'figures')
+        self.data_dir = str(data_dir) if data_dir is not None else os.path.join(base_dir, 'data')
+        self.results_dir = str(results_dir) if results_dir is not None else os.path.join(base_dir, 'results')
         
         # Create figures directory
         os.makedirs(self.figure_dir, exist_ok=True)
@@ -639,14 +648,21 @@ class LoadingPlotter:
         # Plot with publication-quality styling.
         # IMPORTANT: make lines distinguishable even in grayscale printing.
         # We use (color + linestyle + marker shape + thicker linewidths).
-        x = np.arange(len(w_true))
+        n = int(len(w_true))
+        x = np.arange(n)
+
+        # For high-dimensional settings, plotting a marker at every coordinate becomes unreadable.
+        markevery = 1 if n <= 50 else max(1, n // 40)
+        markersize = 7 if n <= 50 else 3
+        markeredgewidth = 1.2 if n <= 50 else 0.8
 
         common = {
-            "markevery": 1,  # p/q are small in our paper setting; show marker at each index.
-            "markersize": 7,
-            "markeredgewidth": 1.2,
+            "markevery": markevery,
+            "markersize": markersize,
+            "markeredgewidth": markeredgewidth,
             "alpha": 0.98,
         }
+
 
         ax.plot(
             x,
@@ -704,6 +720,7 @@ class LoadingPlotter:
             )
 
         if w_oracle is not None:
+            oracle_markersize = 10 if n <= 50 else 6
             ax.plot(
                 x,
                 w_oracle,
@@ -711,15 +728,16 @@ class LoadingPlotter:
                 linestyle="--",
                 linewidth=2.2,
                 marker="*",
-                markersize=10,
+                markersize=oracle_markersize,
                 markerfacecolor="#757575",
                 markeredgecolor="black",
                 label=display_name("slm_oracle"),
                 zorder=4,
                 alpha=0.98,
-                markevery=1,
-                markeredgewidth=1.2,
+                markevery=markevery,
+                markeredgewidth=markeredgewidth,
             )
+
         ax.plot(
             x,
             w_em,
@@ -850,13 +868,19 @@ class LoadingPlotter:
             
         # Plot with publication-quality styling.
         # IMPORTANT: make lines distinguishable even in grayscale printing.
-        # We use (color + linestyle + marker shape + thicker linewidths).
-        x = np.arange(len(c_true))
+        # We use (color + linestyle + marker shape).
+        n = int(len(c_true))
+        x = np.arange(n)
+
+        # For high-dimensional settings, plotting a marker at every coordinate becomes unreadable.
+        markevery = 1 if n <= 50 else max(1, n // 40)
+        markersize = 7 if n <= 50 else 3
+        markeredgewidth = 1.2 if n <= 50 else 0.8
 
         common = {
-            "markevery": 1,
-            "markersize": 7,
-            "markeredgewidth": 1.2,
+            "markevery": markevery,
+            "markersize": markersize,
+            "markeredgewidth": markeredgewidth,
             "alpha": 0.98,
         }
 
