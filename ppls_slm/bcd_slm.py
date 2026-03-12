@@ -199,8 +199,9 @@ def reduced_objective_from_Q(
     Qy = np.asarray(Qy, dtype=float)
     Qxy = np.asarray(Qxy, dtype=float)
 
-    if np.any(theta_t2 <= 0) or np.any(b <= 0) or not (se2 > 0) or not (sf2 > 0) or not (sh2 > 0):
+    if np.any(theta_t2 <= 0) or np.any(b <= 0) or not (se2 > 0) or not (sf2 > 0) or (sh2 < 0):
         return float(1e10)
+
 
     D = (sf2 + sh2) * (theta_t2 + se2) + (b**2) * theta_t2 * se2
     N = (sf2 + sh2) * theta_t2 * Qx + sh2 * (theta_t2 + se2) * Qy + (b**2) * theta_t2 * se2 * Qy + b * theta_t2 * Qxy
@@ -328,7 +329,15 @@ def _solve_stiefel_subproblem(
 
 
 class BCDScalarLikelihoodMethod(PPLSAlgorithm):
-    """BCD-SLM algorithm (paper Algorithm 1) with fixed (sigma_e^2, sigma_f^2)."""
+    """BCD-SLM algorithm (paper Algorithm 1) with fixed (sigma_e^2, sigma_f^2).
+
+    Parameters
+    ----------
+    model : str
+        - "ppls" (default): full PPLS (estimate b and sigma_h2)
+        - "pcca": PCCA specialization with B = I_r (b_i = 1) and sigma_h2 = 0.
+          In this mode, we only update (W, C, theta_t2) and keep (b, sigma_h2) fixed.
+    """
 
     def __init__(
         self,
@@ -336,6 +345,7 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         q: int,
         r: int,
         *,
+        model: str = "ppls",
         max_outer_iter: int = 200,
         n_cg_steps_W: int = 5,
         n_cg_steps_C: int = 5,
@@ -346,6 +356,11 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         sigma_h2_bounds: Tuple[float, float] = (1e-8, 100.0),
     ):
         super().__init__(p, q, r)
+
+        self.model = str(model).lower().strip()
+        if self.model not in {"ppls", "pcca"}:
+            raise ValueError("model must be one of {'ppls','pcca'}")
+
         self.max_outer_iter = int(max_outer_iter)
         self.n_cg_steps_W = int(n_cg_steps_W)
         self.n_cg_steps_C = int(n_cg_steps_C)
@@ -354,6 +369,7 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         self.fixed_sigma_e2 = fixed_sigma_e2
         self.fixed_sigma_f2 = fixed_sigma_f2
         self.sigma_h2_bounds = (float(sigma_h2_bounds[0]), float(sigma_h2_bounds[1]))
+
 
     def fit(self, X, Y, starting_points, experiment_dir=None, trial_id=None) -> Dict:
         N = X.shape[0]
@@ -396,6 +412,7 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
             C = np.zeros((self.q, self.r))
             B = np.diag(np.ones(self.r))
             Sigma_t = np.diag(np.ones(self.r))
+            sigma_h2_fail = 0.0 if self.model == "pcca" else 0.01
             return {
                 "W": W,
                 "C": C,
@@ -403,11 +420,12 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
                 "Sigma_t": Sigma_t,
                 "sigma_e2": float(sigma_e2),
                 "sigma_f2": float(sigma_f2),
-                "sigma_h2": float(0.01),
+                "sigma_h2": float(sigma_h2_fail),
                 "objective_value": float("inf"),
                 "n_iterations": 0,
                 "success": False,
             }
+
 
         return best
 
@@ -421,8 +439,14 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         b = np.maximum(np.diag(B0).astype(float), _EPS_POS)
         sigma_h2 = float(max(float(sigma_h2_0), _EPS_POS))
 
+        # PCCA specialization: fix b_i = 1 and sigma_h^2 = 0.
+        if self.model == "pcca":
+            b = np.ones(self.r, dtype=float)
+            sigma_h2 = 0.0
+
         # Enforce identifiability order at start.
         W, C, theta_t2, b = _enforce_identifiability_order_vec(W, C, theta_t2, b)
+
 
         prev_obj = float(_objective_from_parts(objective, W, C, theta_t2, b, sigma_h2))
 
@@ -475,33 +499,36 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
                 )
             theta_t2 = np.maximum(theta_new, _EPS_POS)
 
-            # b update (Prop 5)
-            b_new = np.empty_like(b)
-            for i in range(self.r):
-                b_new[i] = update_b_prop5(
-                    Qx=float(Qx[i]),
-                    Qy=float(Qy[i]),
-                    Qxy=float(Qxy[i]),
-                    theta_t2=float(theta_t2[i]),
-                    b_prev=float(b[i]),
+            if self.model != "pcca":
+                # b update (Prop 5)
+                b_new = np.empty_like(b)
+                for i in range(self.r):
+                    b_new[i] = update_b_prop5(
+                        Qx=float(Qx[i]),
+                        Qy=float(Qy[i]),
+                        Qxy=float(Qxy[i]),
+                        theta_t2=float(theta_t2[i]),
+                        b_prev=float(b[i]),
+                        sigma_e2=float(objective.sigma_e2),
+                        sigma_f2=float(objective.sigma_f2),
+                        sigma_h2=float(sigma_h2),
+                        fallback="keep",
+                    )
+                b = np.maximum(b_new, _EPS_POS)
+
+            if self.model != "pcca":
+                # ---- sigma_h2 update (1D bounded)
+                sigma_h2 = update_sigma_h2_bounded(
+                    Qx=Qx,
+                    Qy=Qy,
+                    Qxy=Qxy,
+                    theta_t2=theta_t2,
+                    b=b,
                     sigma_e2=float(objective.sigma_e2),
                     sigma_f2=float(objective.sigma_f2),
-                    sigma_h2=float(sigma_h2),
-                    fallback="keep",
+                    bounds=self.sigma_h2_bounds,
                 )
-            b = np.maximum(b_new, _EPS_POS)
 
-            # ---- sigma_h2 update (1D bounded)
-            sigma_h2 = update_sigma_h2_bounded(
-                Qx=Qx,
-                Qy=Qy,
-                Qxy=Qxy,
-                theta_t2=theta_t2,
-                b=b,
-                sigma_e2=float(objective.sigma_e2),
-                sigma_f2=float(objective.sigma_f2),
-                bounds=self.sigma_h2_bounds,
-            )
 
             # ---- Reorder components for identifiability
             W, C, theta_t2, b = _enforce_identifiability_order_vec(W, C, theta_t2, b)

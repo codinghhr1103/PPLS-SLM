@@ -289,7 +289,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         run_prediction = bool(run_cfg.get("prediction", True)) and (not args.skip_prediction)
         run_brca_prediction = bool(run_cfg.get("brca_prediction", False)) and (not args.skip_brca)
         run_brca_calibration = bool(run_cfg.get("brca_calibration", False)) and (not args.skip_brca)
+        run_pcca_simulation = bool(run_cfg.get("pcca_simulation", False))
+        run_ppca_verification = bool(run_cfg.get("ppca_verification", False))
         run_sync = bool(run_cfg.get("sync_artifacts", True)) and (not args.no_sync)
+
 
 
         # App-specific config
@@ -322,9 +325,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             _rm_tree(out_base / "figures")
             _rm_tree(out_base / "figures_high")
 
+            _rm_tree(out_base / "pcca_simulation")
+            _rm_tree(out_base / "ppca_verification")
+
             _rm_tree((repo_root / str(assoc_out)).resolve())
             _rm_tree((repo_root / str(pred_out)).resolve())
             _rm_tree((repo_root / "results_prediction_brca").resolve())
+
 
 
 
@@ -408,12 +415,35 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 return code
 
 
-        # 7) Sync artifacts
+        # 7) PCCA simulation (Table 1 extension)
+        if run_pcca_simulation:
+            code = tee_run(
+                [sys.executable, "-u", "scripts/run_pcca_experiment.py", "--config", str(config_path)],
+                cwd=repo_root,
+                log_path=logs_dir / "07_pcca_simulation.log",
+                env=run_env,
+            )
+            if code != 0:
+                return code
+
+        # 8) PPCA verification (Appendix)
+        if run_ppca_verification:
+            code = tee_run(
+                [sys.executable, "-u", "scripts/run_ppca_verification.py", "--config", str(config_path)],
+                cwd=repo_root,
+                log_path=logs_dir / "08_ppca_verification.log",
+                env=run_env,
+            )
+            if code != 0:
+                return code
+
+        # 9) Sync artifacts
         if run_sync:
-            code = tee_run([sys.executable, "-u", "scripts/sync_artifacts.py"], cwd=repo_root, log_path=logs_dir / "07_sync_artifacts.log", env=run_env)
+            code = tee_run([sys.executable, "-u", "scripts/sync_artifacts.py"], cwd=repo_root, log_path=logs_dir / "09_sync_artifacts.log", env=run_env)
 
             if code != 0:
                 return code
+
 
 
 

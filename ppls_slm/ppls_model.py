@@ -118,8 +118,10 @@ class PPLSObjective:
 
         theta_t2 = np.diag(Sigma_t)
         b = np.diag(B)
-        if np.any(theta_t2 <= 0) or np.any(b <= 0) or sigma_h2 <= 0 or se2 <= 0 or sf2 <= 0:
+        # Allow sigma_h2 = 0 for PCCA specialization; only disallow negative values.
+        if np.any(theta_t2 <= 0) or np.any(b <= 0) or sigma_h2 < 0 or se2 <= 0 or sf2 <= 0:
             return 1e10
+
 
         ln_det = self._compute_ln_det(W, C, b, theta_t2, se2, sf2, sigma_h2)
         trace = self._compute_trace(W, C, b, theta_t2, se2, sf2, sigma_h2)
@@ -196,8 +198,10 @@ class PPLSObjectiveWithNoise(PPLSObjective):
 
         theta_t2 = np.diag(Sigma_t)
         b = np.diag(B)
-        if np.any(theta_t2 <= 0) or np.any(b <= 0) or sigma_h2 <= 0 or se2 <= 0 or sf2 <= 0:
+        # Allow sigma_h2 = 0 for PCCA specialization; only disallow negative values.
+        if np.any(theta_t2 <= 0) or np.any(b <= 0) or sigma_h2 < 0 or se2 <= 0 or sf2 <= 0:
             return 1e10
+
 
         ln_det = self._compute_ln_det(W, C, b, theta_t2, se2, sf2, sigma_h2)
         trace = self._compute_trace(W, C, b, theta_t2, se2, sf2, sigma_h2)

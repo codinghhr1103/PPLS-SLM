@@ -86,7 +86,10 @@
       "prediction": true,
       "brca_prediction": true,
       "brca_calibration": true,
+      "pcca_simulation": true,
+      "ppca_verification": true,
       "sync_artifacts": true
+
     },
     "parameter_recovery_scale": {
       "output_dir": "output/parameter_recovery_scale",
@@ -310,10 +313,35 @@
 
 
 
-    }
+    },
 
+    "pcca_simulation": {
+      "output_dir": "output/pcca_simulation",
+      "p": 20,
+      "q": 20,
+      "r": 3,
+      "n_samples": 500,
+      "n_trials": 20,
+      "seed": 42,
+      "sigma_e2": 0.1,
+      "sigma_f2": 0.1,
+      "sigma_h2": 0.0,
+      "b_values": [1.0, 1.0, 1.0],
+      "n_starts": 8
+    },
+
+    "ppca_verification": {
+      "output_dir": "output/ppca_verification",
+      "p": 20,
+      "r": 3,
+      "n_samples": 500,
+      "n_trials": 20,
+      "seed": 42,
+      "sigma_e2": 0.1
+    }
 
 
   }
 }
+
 

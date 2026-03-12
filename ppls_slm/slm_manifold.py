@@ -128,8 +128,9 @@ def _euclidean_gradient_from_parts(
     theta_t2 = np.asarray(theta_t2, dtype=float)
     b = np.asarray(b, dtype=float)
 
-    # Guard against invalid values (optimizer should stay in positive orthant).
-    if np.any(theta_t2 <= 0) or np.any(b <= 0) or not (sh2 > 0):
+    # Guard against invalid values (optimizer should stay in the nonnegative orthant).
+    # Note: for the PCCA specialization we allow sigma_h2 = 0.
+    if np.any(theta_t2 <= 0) or np.any(b <= 0) or (sh2 < 0):
         p, r = W.shape
         q = C.shape[0]
         return (
@@ -139,6 +140,7 @@ def _euclidean_gradient_from_parts(
             np.zeros_like(b),
             np.zeros((1,)),
         )
+
 
     # Per-component denominators and precision weights.
     D = (sf2 + sh2) * (theta_t2 + se2) + (b**2) * theta_t2 * se2

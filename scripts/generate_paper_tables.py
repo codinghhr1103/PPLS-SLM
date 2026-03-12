@@ -171,6 +171,8 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
     low = _read_json(artifacts_dir / "simulation" / "mse_table_low.json")
     high = _read_json(artifacts_dir / "simulation" / "mse_table_high.json")
 
+
+
     methods = [
         ("slm_manifold", "SLM-Manifold"),
         ("bcd_slm", "BCD-SLM"),
@@ -257,9 +259,13 @@ def generate_parameter_mse_table(*, artifacts_dir: Path, out_path: Path) -> None
     append_panel(tex, "Low noise", rows_for(low))
     tex.append(r"\hfill")
     append_panel(tex, "High noise", rows_for(high))
+
+
+
     tex.append(r"\end{table*}")
     tex.append(r"\renewcommand{\arraystretch}{1}")
     tex.append("")
+
 
     out_path.write_text("\n".join(tex), encoding="utf-8")
 
@@ -1358,8 +1364,129 @@ def generate_noise_ablation_exp1_table(*, artifacts_dir: Path, out_path: Path) -
 
 
 
+def generate_pcca_simulation_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    """PCCA specialization simulation table (Appendix).
+
+    Source: paper/artifacts/pcca_simulation/mse_table.json
+    """
+
+    path = artifacts_dir / "pcca_simulation" / "mse_table.json"
+    if not path.exists():
+        raise FileNotFoundError(f"missing: {path}")
+
+    pcca = _read_json(path)
+
+    # Try to pull experiment dimensions from the summary (best-effort).
+    p = q = r = N = M = None
+    summ = artifacts_dir / "pcca_simulation" / "experiment_summary.json"
+    if summ.exists():
+        try:
+            info = _read_json(summ).get("experiment_info", {})
+            p = info.get("p")
+            q = info.get("q")
+            r = info.get("r")
+            N = info.get("n_samples")
+            M = info.get("n_trials_completed")
+        except Exception:
+            p = q = r = N = M = None
+
+    # Sensible defaults (match config.json).
+    p = int(p) if p is not None else 20
+    q = int(q) if q is not None else 20
+    r = int(r) if r is not None else 3
+    N = int(N) if N is not None else 500
+    M = int(M) if M is not None else 20
+
+    tex: list[str] = []
+    tex.append(r"\begin{table}[t]\small")
+    tex.append(r"\centering")
+    tex.append(
+        rf"\caption{{PCCA specialization parameter estimation MSE ($\times 10^2$) (mean $\pm$ std over $M={M}$ trials; $p=q={p}$, $r={r}$, $N={N}$; $B=I_r$, $\sigma_h^2=0$).}}"
+    )
+    tex.append(r"\label{tab:pcca_parameter_mse}")
+    tex.append(r"\setlength{\tabcolsep}{6pt}")
+    tex.append(r"\begin{tabular}{@{}lccc@{}}")
+    tex.append(r"\toprule")
+    tex.append(r"\textbf{Method} & $\text{MSE}_W$ & $\text{MSE}_C$ & $\text{MSE}_{\Sigma_t}$ \\")
+    tex.append(r"\midrule")
+
+    def row(method_key: str, display: str) -> None:
+        cells = [
+            _pm_makecell(str(pcca[method_key][k]["table_str_x1e2"]))
+            for k in ("W", "C", "Sigma_t")
+        ]
+        tex.append(f"{display} & " + " & ".join(cells) + r" \\")
+
+    # Keep the same order as the main table.
+    if "bcd_slm" in pcca:
+        row("bcd_slm", "BCD-SLM")
+    if "em" in pcca:
+        row("em", "EM")
+
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}")
+    tex.append(r"\end{table}")
+    tex.append("")
+
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
+
+def generate_ppca_verification_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    """PPCA noise-variance estimator verification table.
+
+
+    Source: paper/artifacts/ppca_verification/summary.json
+    """
+
+    path = artifacts_dir / "ppca_verification" / "summary.json"
+    if not path.exists():
+        raise FileNotFoundError(f"missing: {path}")
+
+    s = _read_json(path)
+
+    def f6(x: Any) -> str:
+        try:
+            return f"{float(x):.6f}"
+        except Exception:
+            return _latex_escape(str(x))
+
+    mean_spec = f6(s.get("sigma_e2_spectral_mean"))
+    mean_tb = f6(s.get("sigma_e2_tb_mean"))
+    err_spec = f6(s.get("abs_err_mean"))
+    err_tb = f6(s.get("abs_err_mean"))
+
+    M = int(s.get("n_trials", 20))
+    p = int(s.get("p", 20))
+    r = int(s.get("r", 3))
+    N = int(s.get("n_samples", 500))
+    se2 = f6(s.get("sigma_e2_true", 0.1))
+
+    tex: list[str] = []
+    tex.append(r"\begin{table}[t]\small")
+    tex.append(r"\centering")
+    tex.append(
+        rf"\caption{{PPCA noise variance estimation verification ($M={M}$ trials, $p={p}$, $r={r}$, $N={N}$, $\sigma_e^2={se2}$).}}"
+    )
+    tex.append(r"\label{tab:ppca_noise_verification}")
+    tex.append(r"\setlength{\tabcolsep}{6pt}")
+    tex.append(r"\begin{tabular}{lcc}")
+    tex.append(r"\toprule")
+    tex.append(r"Estimator & Mean $\hat{\sigma}_e^2$ & Mean $\lvert\hat{\sigma}_e^2-\sigma_e^2\rvert$ \\")
+    tex.append(r"\midrule")
+    tex.append(rf"Spectral (Theorem 4) & {mean_spec} & {err_spec} \\")
+    tex.append(rf"Tipping \& Bishop MLE & {mean_tb} & {err_tb} \\")
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}")
+    tex.append(r"\end{table}")
+    tex.append("")
+
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
 def generate_paper_metrics(*, artifacts_dir: Path, out_path: Path) -> None:
     """Generate LaTeX macros for key scalar results used in the prose.
+
 
     This keeps the narrative consistent with the latest `paper/artifacts/*`.
 
@@ -1536,6 +1663,20 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     generate_convergence_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_algorithm_convergence.tex")
     generate_parameter_mse_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_parameter_mse.tex")
+
+    # PCCA specialization table (optional)
+    try:
+        generate_pcca_simulation_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_pcca_simulation.tex")
+    except FileNotFoundError as e:
+        print(f"[SKIP] PCCA simulation table ({e})")
+
+    # PPCA verification table (optional)
+    try:
+        generate_ppca_verification_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_ppca_verification.tex")
+    except FileNotFoundError as e:
+        print(f"[SKIP] PPCA verification table ({e})")
+
+
 
     scale_dir = artifacts_dir / "simulation_scale"
     if (scale_dir / "parameter_recovery_scale_summary.csv").exists():

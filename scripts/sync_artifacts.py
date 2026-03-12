@@ -73,9 +73,24 @@ def main() -> int:
     copied += copy_glob(out / "figures_high", "*.png", sim_dir / "figures_high")
     copied += copy_glob(out / "figures_high", "*.xlsx", sim_dir / "figures_high")
 
+    # --- PCCA simulation (Table 1 extension) ---
+    pcca_out = out / "pcca_simulation"
+    pcca_dir = artifacts / "pcca_simulation"
+    copied += int(copy_file(pcca_out / "mse_table.json", pcca_dir / "mse_table.json"))
+    copied += int(copy_file(pcca_out / "experiment_summary.json", pcca_dir / "experiment_summary.json"))
+    copied += int(copy_file(pcca_out / "per_trial_mse.csv", pcca_dir / "per_trial_mse.csv"))
+
+    # --- PPCA verification (Appendix) ---
+    ppca_out = out / "ppca_verification"
+    ppca_dir = artifacts / "ppca_verification"
+    copied += int(copy_file(ppca_out / "summary.json", ppca_dir / "summary.json"))
+    copied += int(copy_file(ppca_out / "summary.csv", ppca_dir / "summary.csv"))
+    copied += int(copy_file(ppca_out / "per_trial.csv", ppca_dir / "per_trial.csv"))
+
     # --- Large-scale parameter recovery ---
     scale_out = out / "parameter_recovery_scale" / "full"
     scale_dir = artifacts / "simulation_scale"
+
     copied += int(copy_file(scale_out / "parameter_recovery_scale_summary.csv", scale_dir / "parameter_recovery_scale_summary.csv"))
     copied += int(copy_file(scale_out / "parameter_recovery_scale_runtime.csv", scale_dir / "parameter_recovery_scale_runtime.csv"))
     copied += int(copy_file(scale_out / "run_manifest.json", scale_dir / "run_manifest.json"))
