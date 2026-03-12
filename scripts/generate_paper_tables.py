@@ -1007,8 +1007,210 @@ def generate_prediction_brca_summary_table(*, artifacts_dir: Path, out_path: Pat
 
 
 # -----------------------------------------------------------------------------
+#  CITE-seq (PBMC) prediction tables
+# -----------------------------------------------------------------------------
+
+
+def _format_time_cell(x: Any, *, status: Optional[str] = None) -> str:
+    if status is not None and str(status).strip().lower() in ("dnf", ">24h", "timeout"):
+        return "DNF"
+    try:
+        xf = float(x)
+    except Exception:
+        return _latex_escape(str(x))
+    if not np.isfinite(xf):
+        return "DNF"
+    if xf < 60:
+        return f"{xf:.1f}s"
+    if xf < 3600:
+        return f"{xf/60.0:.1f}m"
+    return f"{xf/3600.0:.1f}h"
+
+
+def generate_citeseq_runtime_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    path = artifacts_dir / "prediction" / "citeseq" / "citeseq_scalability.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"missing: {path}")
+
+    df = pd.read_csv(path)
+    required = {"N", "method", "time_sec"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Unexpected citeseq_scalability.csv schema; missing={sorted(missing)}")
+
+    if "status" not in df.columns:
+        df["status"] = "ok"
+
+    Ns = [5000, 15000, 30000]
+    methods = ["SLM-Manifold", "BCD-SLM", "EM"]
+
+    def get_cell(m: str, N: int) -> str:
+        sub = df[(df["method"].astype(str) == m) & (df["N"].astype(int) == int(N))]
+        if sub.empty:
+            return "--"
+        r = sub.iloc[0]
+        return _format_time_cell(r.get("time_sec"), status=str(r.get("status", "ok")))
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{4pt}")
+    tex.append(r"\renewcommand{\arraystretch}{1.1}")
+    tex.append(r"\begin{table}[t]\small")
+    tex.append(r"\centering")
+    tex.append(r"\caption{Wall-clock runtime for fitting PPLS on PBMC CITE-seq subsets at $(p,q,r)=(2000,228,15)$.}")
+    tex.append(r"\label{tab:citeseq-runtime}")
+    tex.append(r"\begin{tabular}{lccc}")
+    tex.append(r"\toprule")
+    tex.append(r"Method & $N{=}5000$ & $N{=}15000$ & $N{=}30000$\\")
+    tex.append(r"\midrule")
+    for m in methods:
+        tex.append(f"{_latex_escape(m)} & {get_cell(m, Ns[0])} & {get_cell(m, Ns[1])} & {get_cell(m, Ns[2])} \\")
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}")
+    tex.append(r"\end{table}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
+    tex.append("")
+
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
+def generate_citeseq_prediction_summary_table(*, artifacts_dir: Path, out_path: Path) -> None:
+    pred_path = artifacts_dir / "prediction" / "citeseq" / "citeseq_prediction_summary.csv"
+    cov_path = artifacts_dir / "prediction" / "citeseq" / "citeseq_calibration_summary.csv"
+    if not pred_path.exists():
+        raise FileNotFoundError(f"missing: {pred_path}")
+
+    dfp = pd.read_csv(pred_path)
+    dfc = pd.read_csv(cov_path) if cov_path.exists() else pd.DataFrame()
+
+    def pick_row(method_key: str) -> Optional[pd.Series]:
+        sub = dfp[dfp["method"].astype(str) == method_key]
+        if sub.empty:
+            return None
+        return sub.iloc[0]
+
+    def find_slm_row() -> Optional[pd.Series]:
+        sub = dfp[dfp["method"].astype(str).str.startswith("PPLS-SLM", na=False)]
+        if sub.empty:
+            return None
+        return sub.sort_values(["mse_mean"], ascending=True).iloc[0]
+
+    def pretty_method(name: str, r_val: Any) -> str:
+        s = str(name)
+        if s.startswith("PPLS-SLM"):
+            # Match paper phrasing.
+            return f"SLM-Manifold-Adaptive ($r={int(r_val)}$)" if s.endswith("Adaptive") else f"SLM-Manifold ($r={int(r_val)}$)"
+        if s == "PLSR":
+            return f"PLSR ($r={int(r_val)}$)"
+        if s == "Ridge":
+            return "Ridge"
+        if s == "PPLS-EM":
+            return f"PPLS-EM ($r={int(r_val)}$)"
+        return s
+
+    def fmt_metric(x: Any) -> str:
+        try:
+            xf = float(x)
+        except Exception:
+            return "--"
+        if not np.isfinite(xf):
+            return "DNF"
+        ax = abs(xf)
+        if ax == 0.0:
+            return "0"
+        if 1e-3 <= ax < 1e4:
+            return f"{xf:.4g}"
+        return f"{xf:.3e}"
+
+    def cov_cell(method: str, r_val: Any, alpha: float) -> str:
+        if dfc.empty:
+            return "--"
+        sub = dfc[(dfc["method"].astype(str) == str(method)) & (dfc["r"].astype(str) == str(r_val)) & (np.isclose(dfc["alpha"].astype(float), float(alpha)))]
+        if sub.empty:
+            return "--"
+        c = float(sub.iloc[0]["coverage_mean"])
+        if not np.isfinite(c):
+            return "DNF"
+        return f"{100.0*c:.2f}\\%"
+
+    rows_out: list[Tuple[str, Any, Any, Any, Any, Any, Any]] = []
+
+    slm = find_slm_row()
+    if slm is not None:
+        mname = str(slm["method"])
+        r_val = slm["r"]
+        rows_out.append(
+            (
+                pretty_method(mname, r_val),
+                fmt_metric(slm.get("mse_mean")),
+                fmt_metric(slm.get("mae_mean")),
+                fmt_metric(slm.get("r2_mean")),
+                cov_cell(mname, r_val, 0.05),
+                cov_cell(mname, r_val, 0.10),
+                cov_cell(mname, r_val, 0.20),
+            )
+        )
+
+    for key in ("PLSR", "Ridge"):
+        r = pick_row(key)
+        if r is None:
+            continue
+        rows_out.append(
+            (
+                pretty_method(str(r["method"]), r.get("r")),
+                fmt_metric(r.get("mse_mean")),
+                fmt_metric(r.get("mae_mean")),
+                fmt_metric(r.get("r2_mean")),
+                "--",
+                "--",
+                "--",
+            )
+        )
+
+    em = pick_row("PPLS-EM")
+    if em is not None:
+        mname = str(em["method"])
+        r_val = em.get("r")
+        rows_out.append(
+            (
+                pretty_method(mname, r_val),
+                fmt_metric(em.get("mse_mean")),
+                fmt_metric(em.get("mae_mean")),
+                fmt_metric(em.get("r2_mean")),
+                cov_cell(mname, r_val, 0.05),
+                cov_cell(mname, r_val, 0.10),
+                cov_cell(mname, r_val, 0.20),
+            )
+        )
+
+    tex: list[str] = []
+    tex.append(r"\setlength{\tabcolsep}{3.5pt}")
+    tex.append(r"\renewcommand{\arraystretch}{1.1}")
+    tex.append(r"\begin{table}[t]\small")
+    tex.append(r"\centering")
+    tex.append(r"\caption{Protein imputation on PBMC CITE-seq (5-fold CV). Left: prediction accuracy; right: predictive-interval coverage at nominal levels $1-\alpha$.}")
+    tex.append(r"\label{tab:citeseq_pred_summary}")
+    tex.append(r"\begin{tabular}{lccc|ccc}")
+    tex.append(r"\toprule")
+    tex.append(r"& \multicolumn{3}{c|}{Prediction} & \multicolumn{3}{c}{Coverage}\\")
+    tex.append(r"Method & MSE $\downarrow$ & MAE $\downarrow$ & $R^2$ $\uparrow$ & $\alpha{=}0.05$ & $\alpha{=}0.10$ & $\alpha{=}0.20$\\")
+    tex.append(r"\midrule")
+
+    for m, mse, mae, r2, c05, c10, c20 in rows_out:
+        tex.append(f"{_latex_escape(m)} & {mse} & {mae} & {r2} & {c05} & {c10} & {c20} \\")
+
+    tex.append(r"\bottomrule")
+    tex.append(r"\end{tabular}")
+    tex.append(r"\end{table}")
+    tex.append(r"\renewcommand{\arraystretch}{1}")
+    tex.append("")
+
+    out_path.write_text("\n".join(tex), encoding="utf-8")
+
+
+# -----------------------------------------------------------------------------
 #  Model selection (latent dimension r)
 # -----------------------------------------------------------------------------
+
 
 def _format_sci_tex(x: Any, *, sig: int = 3) -> str:
     """Format a float as LaTeX-friendly scientific notation.
@@ -1633,7 +1835,112 @@ def generate_paper_metrics(*, artifacts_dir: Path, out_path: Path) -> None:
     lines.append(r"\providecommand{\OverlapPOneEminusSix}{" + str(overlap_at("p < 1e-6")) + "}")
     lines.append(r"\providecommand{\OverlapPOneEminusFour}{" + str(overlap_at("p < 1e-4")) + "}")
 
+    # --- CITE-seq (PBMC) runtime + headline metrics (optional) ---
+    cit_dir = artifacts_dir / "prediction" / "citeseq"
+    cit_scal = cit_dir / "citeseq_scalability.csv"
+    cit_pred = cit_dir / "citeseq_prediction_summary.csv"
+    cit_cov = cit_dir / "citeseq_calibration_summary.csv"
+
+    def _cit_time(method: str, N: int) -> str:
+        if not cit_scal.exists():
+            return "--"
+        df = pd.read_csv(cit_scal)
+        if "status" not in df.columns:
+            df["status"] = "ok"
+        sub = df[(df["method"].astype(str) == str(method)) & (df["N"].astype(int) == int(N))]
+        if sub.empty:
+            return "--"
+        r = sub.iloc[0]
+        return _format_time_cell(r.get("time_sec"), status=str(r.get("status", "ok")))
+
+    t_slm_5k = _cit_time("SLM-Manifold", 5000)
+    t_slm_15k = _cit_time("SLM-Manifold", 15000)
+    t_slm_30k = _cit_time("SLM-Manifold", 30000)
+    t_bcd_5k = _cit_time("BCD-SLM", 5000)
+    t_bcd_15k = _cit_time("BCD-SLM", 15000)
+    t_bcd_30k = _cit_time("BCD-SLM", 30000)
+    t_em_5k = _cit_time("EM", 5000)
+    t_em_15k = _cit_time("EM", 15000)
+    t_em_30k = _cit_time("EM", 30000)
+
+    # A prose-friendly one-liner used in `sec8_experiments.tex`.
+    if cit_scal.exists():
+        # Keep this as plain text (no math) so it can be dropped into running prose safely.
+        runtime_summary = (
+            f"SLM-Manifold: {t_slm_5k}/{t_slm_15k}/{t_slm_30k} at N=5k/15k/30k; "
+            f"BCD-SLM: {t_bcd_5k}/{t_bcd_15k}/{t_bcd_30k}; "
+            f"EM: {t_em_5k}/{t_em_15k}/{t_em_30k}"
+        )
+    else:
+        runtime_summary = "--"
+
+
+    lines.append(r"\providecommand{\CiteSeqRuntimeSummary}{" + runtime_summary + "}")
+
+    # Optional: best-SLM headline numbers (not required by the main paper text, but handy for future edits).
+    if cit_pred.exists():
+        try:
+            dfp = pd.read_csv(cit_pred)
+            slm_rows = dfp[dfp["method"].astype(str).str.startswith("PPLS-SLM", na=False)]
+            slm_best = slm_rows.sort_values(["mse_mean"], ascending=True).iloc[0] if not slm_rows.empty else None
+        except Exception:
+            slm_best = None
+    else:
+        slm_best = None
+
+    def _fmt_num(x: Any) -> str:
+        try:
+            xf = float(x)
+        except Exception:
+            return "--"
+        if not np.isfinite(xf):
+            return "DNF"
+        ax = abs(xf)
+        if ax == 0.0:
+            return "0"
+        if 1e-3 <= ax < 1e4:
+            return f"{xf:.4g}"
+        return f"{xf:.3e}"
+
+    if slm_best is not None:
+        lines.append(r"\providecommand{\CiteSeqBestR}{" + str(int(slm_best.get("r", 0))) + "}")
+        lines.append(r"\providecommand{\CiteSeqBestMSE}{" + _fmt_num(slm_best.get("mse_mean")) + "}")
+        lines.append(r"\providecommand{\CiteSeqBestMAE}{" + _fmt_num(slm_best.get("mae_mean")) + "}")
+        lines.append(r"\providecommand{\CiteSeqBestRtwo}{" + _fmt_num(slm_best.get("r2_mean")) + "}")
+    else:
+        lines.append(r"\providecommand{\CiteSeqBestR}{--}")
+        lines.append(r"\providecommand{\CiteSeqBestMSE}{--}")
+        lines.append(r"\providecommand{\CiteSeqBestMAE}{--}")
+        lines.append(r"\providecommand{\CiteSeqBestRtwo}{--}")
+
+    if cit_cov.exists() and slm_best is not None:
+        try:
+            dfc = pd.read_csv(cit_cov)
+            m = str(slm_best.get("method"))
+            r_val = str(slm_best.get("r"))
+            sub = dfc[(dfc["method"].astype(str) == m) & (dfc["r"].astype(str) == r_val)]
+
+            def cov(alpha: float) -> str:
+                s2 = sub[np.isclose(sub["alpha"].astype(float), float(alpha))]
+                if s2.empty:
+                    return "--"
+                c = float(s2.iloc[0]["coverage_mean"])
+                return "DNF" if not np.isfinite(c) else f"{100.0*c:.2f}\\%"
+
+            lines.append(r"\providecommand{\CiteSeqCoverAZeroZeroFive}{" + cov(0.05) + "}")
+            lines.append(r"\providecommand{\CiteSeqCoverAZeroOneZero}{" + cov(0.10) + "}")
+            lines.append(r"\providecommand{\CiteSeqCoverAZeroTwoZero}{" + cov(0.20) + "}")
+        except Exception:
+            lines.append(r"\providecommand{\CiteSeqCoverAZeroZeroFive}{--}")
+            lines.append(r"\providecommand{\CiteSeqCoverAZeroOneZero}{--}")
+            lines.append(r"\providecommand{\CiteSeqCoverAZeroTwoZero}{--}")
+    else:
+        lines.append(r"\providecommand{\CiteSeqCoverAZeroZeroFive}{--}")
+        lines.append(r"\providecommand{\CiteSeqCoverAZeroOneZero}{--}")
+        lines.append(r"\providecommand{\CiteSeqCoverAZeroTwoZero}{--}")
+
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -1735,7 +2042,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f"[SKIP] BRCA calibration table (missing: {brca_dir / 'brca_calibration_table.csv'})")
 
 
+    # CITE-seq (optional)
+    cit_dir = artifacts_dir / "prediction" / "citeseq"
+    if (cit_dir / "citeseq_prediction_summary.csv").exists():
+        generate_citeseq_prediction_summary_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_citeseq_prediction_summary.tex")
+    else:
+        print(f"[SKIP] CITE-seq prediction table (missing: {cit_dir / 'citeseq_prediction_summary.csv'})")
+
+    if (cit_dir / "citeseq_scalability.csv").exists():
+        generate_citeseq_runtime_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_citeseq_runtime.tex")
+    else:
+        print(f"[SKIP] CITE-seq runtime table (missing: {cit_dir / 'citeseq_scalability.csv'})")
+
+
     # Model selection tables (latent dimension r)
+
     ms_dir = artifacts_dir / "model_selection"
     if (ms_dir / "synthetic" / "selection_accuracy_table.csv").exists():
         generate_model_selection_synthetic_table(artifacts_dir=artifacts_dir, out_path=out_dir / "tab_model_selection_synth.tex")

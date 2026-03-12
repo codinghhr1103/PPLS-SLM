@@ -48,6 +48,29 @@ paper/
 results_association_smoketest/
 
 # =====================================================================
+# Data (large, not for git)
+# =====================================================================
+# Raw downloads / caches
+data/
+
+# CITE-seq exports (generated)
+application/citeseq_rna.csv
+application/citeseq_adt.csv
+application/*.h5ad
+application/*.h5mu
+application/*.npy
+application/*.npz
+
+# Other large single-cell formats
+*.h5ad
+*.h5mu
+
+# LaTeX build logs
+*.log
+texput.*
+
+# =====================================================================
 # Archives / local scratch (add project-specific patterns as needed)
 # =====================================================================
 # (Intentionally NOT ignoring all *.zip because the repo tracks datasets.)
+

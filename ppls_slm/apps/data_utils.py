@@ -233,3 +233,241 @@ def select_feature_indices(
 
     raise ValueError(f"Unsupported feature screening method: {method}")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CITE-seq loader (PBMC)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def load_citeseq_data(
+    path: str,
+    n_top_genes: int = 2000,
+    subsample_n: Optional[int] = None,
+    seed: int = 42,
+    *,
+    return_names: bool = False,
+):
+    """Load PBMC CITE-seq data.
+
+    Supports
+    --------
+    - `.h5ad` (AnnData):
+        * Case A: RNA in `adata.X`, ADT in `adata.obsm['protein'|'adt'|...]`
+        * Case B: both modalities in one matrix with `adata.var['feature_types']`
+          containing 'Gene Expression' vs 'Antibody Capture'
+    - Directory with `citeseq_rna.csv` + `citeseq_adt.csv`.
+    - Single `.csv` or `.csv.zip` with prefixed columns: `rna_*` and `adt_*`.
+
+    Parameters
+    ----------
+    path:
+        Path to a `.h5ad` file, a directory, or a `.csv`/`.csv.zip`.
+    n_top_genes:
+        Number of highly variable genes to keep (by variance).
+    subsample_n:
+        If provided, randomly subsample this many cells.
+    seed:
+        RNG seed for subsampling.
+    return_names:
+        If True, also return `(gene_names, protein_names)`.
+
+    Returns
+    -------
+    X, Y : np.ndarray
+        Centered matrices of shape `(N, p)` and `(N, q)`.
+    gene_names, protein_names : Optional[List[str]]
+        Returned only when `return_names=True`.
+    """
+
+    import os
+
+    lower = str(path).lower()
+
+    X_raw: np.ndarray
+    Y_raw: np.ndarray
+    gene_names: Optional[list] = None
+    protein_names: Optional[list] = None
+
+    # --- AnnData (.h5ad) ---
+    if lower.endswith(".h5ad"):
+        try:
+            import anndata  # type: ignore
+        except Exception as e:
+            raise ImportError("Reading .h5ad requires the `anndata` package. Install via: pip install anndata") from e
+
+        adata = anndata.read_h5ad(path)
+
+        # Case A: ADT in obsm
+        obsm_keys = list(getattr(adata, "obsm", {}).keys())
+        candidate_keys = [
+            "protein",
+            "proteins",
+            "adt",
+            "ADT",
+            "Antibody Capture",
+            "antibody_capture",
+            "protein_expression",
+            "protein_counts",
+        ]
+        hit = next((k for k in candidate_keys if k in obsm_keys), None)
+
+        if hit is not None:
+            X_mat = adata.X
+            if hasattr(X_mat, "toarray"):
+                X_raw = X_mat.toarray()
+            else:
+                X_raw = np.asarray(X_mat)
+            Y_raw = np.asarray(adata.obsm[hit])
+
+            try:
+                gene_names = [str(x) for x in getattr(adata, "var_names", [])]
+            except Exception:
+                gene_names = None
+
+            # ADT names may live in `adata.uns` or `adata.obsm` metadata; best-effort.
+            protein_names = None
+
+        else:
+            # Case B: single matrix with feature_types
+            ft = None
+            try:
+                if getattr(adata, "var", None) is not None and "feature_types" in adata.var.columns:
+                    ft = adata.var["feature_types"].astype(str).to_numpy()
+            except Exception:
+                ft = None
+
+            if ft is None:
+                raise NotImplementedError(
+                    "Unsupported .h5ad schema: expected ADT in adata.obsm['protein'|'adt'|...] or adata.var['feature_types']. "
+                    "Please convert your data to one of these formats (or provide CSV inputs)."
+                )
+
+            is_rna = np.array([s.lower() in ("gene expression", "rna") for s in ft], dtype=bool)
+            is_adt = np.array(["antibody" in s.lower() or "adt" in s.lower() for s in ft], dtype=bool)
+            if not is_rna.any() or not is_adt.any():
+                raise ValueError("feature_types did not contain both RNA and ADT features")
+
+            X_mat = adata.X[:, is_rna]
+            Y_mat = adata.X[:, is_adt]
+
+            X_raw = X_mat.toarray() if hasattr(X_mat, "toarray") else np.asarray(X_mat)
+            Y_raw = Y_mat.toarray() if hasattr(Y_mat, "toarray") else np.asarray(Y_mat)
+
+            try:
+                var_names = [str(x) for x in getattr(adata, "var_names", [])]
+                gene_names = [var_names[i] for i in np.where(is_rna)[0]]
+                protein_names = [var_names[i] for i in np.where(is_adt)[0]]
+            except Exception:
+                gene_names = None
+                protein_names = None
+
+
+    # --- Directory with two CSVs ---
+    elif os.path.isdir(path):
+        import csv
+        import pandas as pd
+
+        rna_path = os.path.join(path, "citeseq_rna.csv")
+        adt_path = os.path.join(path, "citeseq_adt.csv")
+        if not (os.path.exists(rna_path) and os.path.exists(adt_path)):
+            raise FileNotFoundError(f"Expected {rna_path} and {adt_path}")
+
+        def _has_leading_index_col(csv_path: str) -> bool:
+            """Heuristic: detect whether the first CSV column is a pandas-written index."""
+
+            try:
+                with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                    row = next(csv.reader(f))
+            except Exception:
+                return False
+            if not row:
+                return False
+            h0 = str(row[0]).strip()
+            return h0 in ("", "Unnamed: 0", "index")
+
+        def _read_matrix(csv_path: str) -> pd.DataFrame:
+            idx_col = 0 if _has_leading_index_col(csv_path) else None
+            df = pd.read_csv(csv_path, index_col=idx_col)
+            # Some variants may still have an unnamed index-like column even with idx_col=None.
+            if len(df.columns) and str(df.columns[0]).startswith("Unnamed:"):
+                df = df.drop(columns=[df.columns[0]])
+            return df
+
+        X_df = _read_matrix(rna_path)
+        Y_df = _read_matrix(adt_path)
+
+        X_raw = X_df.to_numpy(dtype=float)
+        Y_raw = Y_df.to_numpy(dtype=float)
+        gene_names = [str(c) for c in X_df.columns]
+        protein_names = [str(c) for c in Y_df.columns]
+
+
+
+    # --- Single CSV / CSV.ZIP with prefixed columns ---
+    elif lower.endswith(".csv") or lower.endswith(".csv.zip") or lower.endswith(".zip"):
+        import io
+        import zipfile
+        import pandas as pd
+
+        if lower.endswith(".zip") and (not lower.endswith(".csv.zip")):
+            # assume zipped single CSV
+            with zipfile.ZipFile(path) as z:
+                names = z.namelist()
+                if not names:
+                    raise ValueError(f"Empty zip file: {path}")
+                data = z.read(names[0])
+                df = pd.read_csv(io.BytesIO(data))
+        else:
+            df = pd.read_csv(path)
+
+        rna_cols = [c for c in df.columns if str(c).startswith("rna_")]
+        adt_cols = [c for c in df.columns if str(c).startswith("adt_")]
+        if not rna_cols or not adt_cols:
+            raise ValueError(
+                "CITE-seq CSV must contain `rna_` and `adt_` prefixed columns. "
+                f"Found rna_={len(rna_cols)}, adt_={len(adt_cols)}"
+            )
+
+        X_raw = df[rna_cols].to_numpy(dtype=float)
+        Y_raw = df[adt_cols].to_numpy(dtype=float)
+        gene_names = [str(c)[4:] for c in rna_cols]
+        protein_names = [str(c)[4:] for c in adt_cols]
+
+
+    else:
+        raise ValueError(f"Unsupported CITE-seq data format: {path}")
+
+    # Defensive cleaning
+    good_rows = np.isfinite(X_raw).all(axis=1) & np.isfinite(Y_raw).all(axis=1)
+    X_raw = X_raw[good_rows]
+    Y_raw = Y_raw[good_rows]
+
+    # Select top HVGs by variance (already normalized upstream)
+    p = int(X_raw.shape[1])
+    k = int(max(1, min(int(n_top_genes), p)))
+    if p > k:
+        v = np.var(X_raw, axis=0)
+        top_idx = np.argsort(-v, kind="mergesort")[:k]
+        top_idx = np.sort(top_idx)
+        X_raw = X_raw[:, top_idx]
+        if gene_names is not None:
+            gene_names = [gene_names[i] for i in top_idx]
+
+    # Optional subsample
+    if subsample_n is not None and int(subsample_n) < int(X_raw.shape[0]):
+        rng = np.random.RandomState(int(seed))
+        idx = rng.choice(X_raw.shape[0], size=int(subsample_n), replace=False)
+        idx = np.sort(idx)
+        X_raw = X_raw[idx]
+        Y_raw = Y_raw[idx]
+
+    # Center (do NOT standardize here)
+    X = X_raw - np.mean(X_raw, axis=0, keepdims=True)
+    Y = Y_raw - np.mean(Y_raw, axis=0, keepdims=True)
+
+    if bool(return_names):
+        return X, Y, (gene_names or [f"gene_{i}" for i in range(X.shape[1])]), (protein_names or [f"protein_{j}" for j in range(Y.shape[1])])
+
+    return X, Y
+
+

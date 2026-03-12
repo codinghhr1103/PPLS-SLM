@@ -220,9 +220,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--skip-association", action="store_true", help="Skip association application")
     parser.add_argument("--skip-prediction", action="store_true", help="Skip prediction application")
     parser.add_argument("--skip-brca", action="store_true", help="Skip BRCA prediction + calibration")
+    parser.add_argument("--skip-citeseq", action="store_true", help="Skip CITE-seq prediction benchmark")
 
 
     parser.add_argument("--no-sync", action="store_true", help="Do not run scripts/sync_artifacts.py")
+
 
     parser.add_argument(
         "--clean",
@@ -289,7 +291,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         run_prediction = bool(run_cfg.get("prediction", True)) and (not args.skip_prediction)
         run_brca_prediction = bool(run_cfg.get("brca_prediction", False)) and (not args.skip_brca)
         run_brca_calibration = bool(run_cfg.get("brca_calibration", False)) and (not args.skip_brca)
+        run_citeseq_prediction = bool(run_cfg.get("citeseq_prediction", False)) and (not args.skip_citeseq)
         run_pcca_simulation = bool(run_cfg.get("pcca_simulation", False))
+
         run_ppca_verification = bool(run_cfg.get("ppca_verification", False))
         run_sync = bool(run_cfg.get("sync_artifacts", True)) and (not args.no_sync)
 
@@ -331,6 +335,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             _rm_tree((repo_root / str(assoc_out)).resolve())
             _rm_tree((repo_root / str(pred_out)).resolve())
             _rm_tree((repo_root / "results_prediction_brca").resolve())
+            _rm_tree((repo_root / "results_citeseq").resolve())
+
 
 
 
@@ -415,7 +421,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 return code
 
 
+        # 6b) CITE-seq prediction benchmark (optional)
+        if run_citeseq_prediction:
+            cmd = [sys.executable, "-u", "-m", "ppls_slm.apps.citeseq_prediction", "--config", str(config_path)]
+
+            code = tee_run(cmd, cwd=repo_root, log_path=logs_dir / "06b_citeseq_prediction.log", env=run_env)
+            if code != 0:
+                return code
+
+
         # 7) PCCA simulation (Table 1 extension)
+
         if run_pcca_simulation:
             code = tee_run(
                 [sys.executable, "-u", "scripts/run_pcca_experiment.py", "--config", str(config_path)],
