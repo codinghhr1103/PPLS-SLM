@@ -1,4 +1,5 @@
-"""Run CITE-seq Phase 1 (scalability + 5-fold CV).
+"""Run CITE-seq Phase 1 (prediction + calibration).
+
 
 Usage (repo root):
   python scripts/run_citeseq_phase1.py
@@ -17,7 +18,7 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run CITE-seq Phase 1 (scalability + 5-fold CV)")
+    p = argparse.ArgumentParser(description="Run CITE-seq Phase 1 (prediction + calibration)")
     p.add_argument("--config", type=str, default="config.json", help="Path to config JSON (default: config.json)")
     return p.parse_args()
 

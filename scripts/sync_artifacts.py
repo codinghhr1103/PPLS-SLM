@@ -12,8 +12,11 @@ It is safe to re-run; files are overwritten.
 from __future__ import annotations
 
 import shutil
+import subprocess
+import sys
 
 from pathlib import Path
+
 
 
 
@@ -151,7 +154,7 @@ def main() -> int:
     cit_root = repo_root / "results_citeseq"
     pred_cit = pred_dir / "citeseq"
 
-    copied += int(copy_file(cit_root / "citeseq_scalability.csv", pred_cit / "citeseq_scalability.csv"))
+
     copied += int(copy_file(cit_root / "citeseq_prediction_per_fold.csv", pred_cit / "citeseq_prediction_per_fold.csv"))
     copied += int(copy_file(cit_root / "citeseq_prediction_by_r.csv", pred_cit / "citeseq_prediction_by_r.csv"))
     copied += int(copy_file(cit_root / "citeseq_prediction_summary.csv", pred_cit / "citeseq_prediction_summary.csv"))

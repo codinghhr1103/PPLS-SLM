@@ -271,6 +271,8 @@ def _solve_stiefel_subproblem(
     sigma_h2: float,
     which: str,
     n_cg_steps: int,
+    manifold=None,
+    solver=None,
 ) -> _SubproblemResult:
     """Solve W-step or C-step on a single Stiefel manifold using a few CG iterations."""
 
@@ -287,11 +289,13 @@ def _solve_stiefel_subproblem(
 
     p, r = var0.shape
 
-    class _StiefelQF(Stiefel):
-        def retraction(self, point, tangent_vector):  # type: ignore[override]
-            return _qr_with_positive_diagonal(point + tangent_vector)
+    if manifold is None:
+        class _StiefelQF(Stiefel):
+            def retraction(self, point, tangent_vector):  # type: ignore[override]
+                return _qr_with_positive_diagonal(point + tangent_vector)
 
-    manifold = _StiefelQF(p, r)
+        manifold = _StiefelQF(p, r)
+
 
     @function.numpy(manifold)
     def cost(X):
@@ -308,7 +312,9 @@ def _solve_stiefel_subproblem(
         return gC
 
     problem = Problem(manifold=manifold, cost=cost, euclidean_gradient=egrad)
-    solver = ConjugateGradient(max_iterations=int(n_cg_steps), verbosity=0)
+    if solver is None:
+        solver = ConjugateGradient(max_iterations=int(n_cg_steps), verbosity=0)
+
 
     try:
         result = solver.run(problem, initial_point=np.asarray(var0, dtype=float))
@@ -354,7 +360,9 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         fixed_sigma_e2: Optional[float] = None,
         fixed_sigma_f2: Optional[float] = None,
         sigma_h2_bounds: Tuple[float, float] = (1e-8, 100.0),
-    ):
+        early_stop_patience: Optional[int] = None,
+        early_stop_rel_improvement: Optional[float] = None,
+    ): 
         super().__init__(p, q, r)
 
         self.model = str(model).lower().strip()
@@ -369,6 +377,12 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         self.fixed_sigma_e2 = fixed_sigma_e2
         self.fixed_sigma_f2 = fixed_sigma_f2
         self.sigma_h2_bounds = (float(sigma_h2_bounds[0]), float(sigma_h2_bounds[1]))
+
+        self.early_stop_patience = None if early_stop_patience is None else max(1, int(early_stop_patience))
+        self.early_stop_rel_improvement = None if early_stop_rel_improvement is None else float(early_stop_rel_improvement)
+
+
+
 
 
     def fit(self, X, Y, starting_points, experiment_dir=None, trial_id=None) -> Dict:
@@ -396,15 +410,31 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         objective.sigma_f2 = float(sigma_f2)
 
         best: Optional[Dict] = None
+        best_fun = np.inf
+        no_improve = 0
 
         for theta0 in starting_points:
             try:
                 res = self._run_single_start(theta0, objective)
             except Exception:
+                no_improve += 1
+                if self.early_stop_patience is not None and no_improve >= int(self.early_stop_patience):
+                    break
                 continue
 
-            if best is None or float(res.get("objective_value", np.inf)) < float(best.get("objective_value", np.inf)):
+            fun_val = float(res.get("objective_value", np.inf))
+
+            if np.isfinite(fun_val) and fun_val < best_fun:
+                rel_improve = (best_fun - fun_val) / (abs(best_fun) + 1e-12) if best_fun < np.inf and self.early_stop_rel_improvement is not None else np.inf
+                best_fun = fun_val
                 best = res
+                no_improve = 0 if (self.early_stop_rel_improvement is None or rel_improve >= float(self.early_stop_rel_improvement)) else no_improve + 1
+            else:
+                no_improve += 1
+
+            if self.early_stop_patience is not None and no_improve >= int(self.early_stop_patience):
+                break
+
 
         if best is None:
             # Mirror other algorithms: return a failure dict with required keys.
@@ -447,6 +477,21 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
         # Enforce identifiability order at start.
         W, C, theta_t2, b = _enforce_identifiability_order_vec(W, C, theta_t2, b)
 
+        # Pre-create pymanopt objects once per start (avoid 2*max_outer_iter reinstantiations).
+        try:
+            from pymanopt.manifolds import Stiefel
+            from pymanopt.optimizers import ConjugateGradient
+        except ImportError as e:
+            raise ImportError("BCD-SLM requires 'pymanopt'. Install via: pip install pymanopt") from e
+
+        class _StiefelQF(Stiefel):
+            def retraction(self, point, tangent_vector):
+                return _qr_with_positive_diagonal(point + tangent_vector)
+
+        manifold_W = _StiefelQF(self.p, self.r)
+        manifold_C = _StiefelQF(self.q, self.r)
+        solver_W = ConjugateGradient(max_iterations=int(self.n_cg_steps_W), verbosity=0)
+        solver_C = ConjugateGradient(max_iterations=int(self.n_cg_steps_C), verbosity=0)
 
         prev_obj = float(_objective_from_parts(objective, W, C, theta_t2, b, sigma_h2))
 
@@ -466,6 +511,8 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
                 sigma_h2=sigma_h2,
                 which="w",
                 n_cg_steps=self.n_cg_steps_W,
+                manifold=manifold_W,
+                solver=solver_W,
             )
             W = wres.X
 
@@ -479,8 +526,11 @@ class BCDScalarLikelihoodMethod(PPLSAlgorithm):
                 sigma_h2=sigma_h2,
                 which="c",
                 n_cg_steps=self.n_cg_steps_C,
+                manifold=manifold_C,
+                solver=solver_C,
             )
             C = cres.X
+
 
             # ---- Diagonal updates based on projected quadratics
             Qx, Qy, Qxy = compute_projected_quadratics(objective, W, C)

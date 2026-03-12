@@ -1,0 +1,4 @@
+fold,r,method,shrinkage_alpha,cov_scale
+1,15,PPLS-SLM-Manifold-Adaptive,1.5,1.0002691958033088
+2,15,PPLS-SLM-Manifold-Adaptive,1.5,1.0003866637871686
+3,15,PPLS-SLM-Manifold-Adaptive,1.5,1.0003239696711381
