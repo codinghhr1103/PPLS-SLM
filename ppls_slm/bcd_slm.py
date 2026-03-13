@@ -1,13 +1,13 @@
 """BCD-SLM: Block Coordinate Descent for the Scalar Likelihood Method.
 
-This module implements the NeurIPS 2025 paper's Algorithm 1 (Section 4.4):
+This module implements the NeurIPS 2025 paper's Algorithm 1 (Section 3.3):
 - alternate W-step and C-step on Stiefel manifolds (few Riemannian CG steps)
 - update diagonal parameters (theta_t^2, b) via closed-form conditional updates
 - update sigma_h^2 via 1D bounded search
 
 Design goals
 ------------
-- Match the objective used by SLM-Fixed: the same scalar negative log-likelihood
+- Match the objective used by SLM-Manifold: the same scalar negative log-likelihood
   implemented in `ppls_slm.ppls_model.PPLSObjective`.
 - Keep (sigma_e^2, sigma_f^2) fixed (spectral pre-estimates by default).
 - Provide a drop-in algorithm class with the same `fit()` return dict keys as
@@ -58,7 +58,7 @@ def compute_projected_quadratics(
     W: np.ndarray,
     C: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute paper Eqs. (13)-(15): Qx, Qy, Qxy as length-r vectors."""
+    """Compute projected quadratic forms Qx, Qy, Qxy (Appendix D.4) as length-r vectors."""
 
     S_xx = objective.S_xx
     S_yy = objective.S_yy

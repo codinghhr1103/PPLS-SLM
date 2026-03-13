@@ -1,8 +1,4 @@
-"""Backward-compatible wrapper for PPCA verification.
-
-Preferred entry:
-  python -m ppls_slm.apps.ppca_verification --config config.json
-"""
+"""Convenience wrapper for PPCA verification. Equivalent to: python -m ppls_slm.apps.ppca_verification --config config.json"""
 
 from __future__ import annotations
 

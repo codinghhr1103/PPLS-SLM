@@ -1305,7 +1305,7 @@ class PerformanceMetrics:
         for param in params:
             mse_key = f'mse_{param}'
 
-            # SLM-Fixed
+            # SLM-Manifold
             slm_values = [m[mse_key] for m in slm_metrics_list if mse_key in m]
             slm_mean = np.mean(slm_values) if slm_values else np.nan
             slm_std = np.std(slm_values) if slm_values else np.nan
@@ -1327,7 +1327,7 @@ class PerformanceMetrics:
 
             table_data.append({
                 'Parameter': param,
-                'SLM-Fixed': f"{slm_mean*100:.2f}±{slm_std*100:.2f}",
+                'SLM-Manifold': f"{slm_mean*100:.2f}±{slm_std*100:.2f}",
                 'BCD-SLM': f"{bcd_mean*100:.2f}±{bcd_std*100:.2f}",
                 'EM': f"{em_mean*100:.2f}±{em_std*100:.2f}",
                 'ECM': f"{ecm_mean*100:.2f}±{ecm_std*100:.2f}",

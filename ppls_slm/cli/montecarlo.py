@@ -31,7 +31,7 @@ from ppls_slm.utils import repo_root, setup_logging
 
 
 _DEFAULTS: Dict = {
-    # Paper default simulation setting (Section 8.1)
+    # Paper default simulation setting (Section 6.1)
     "model": {"p": 20, "q": 20, "r": 3, "n_samples": 500},
     "data_generation": {
         "noise_levels": {

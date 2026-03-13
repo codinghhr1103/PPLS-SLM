@@ -1,7 +1,6 @@
-"""Application 2: Prediction with Uncertainty Quantification (Section 8.3)
+"""Prediction with Uncertainty Quantification (Section 6.2--6.3)
 
-This module reproduces and extends the prediction experiments from the paper
-"Scalar Likelihood Method for Probabilistic Partial Least Squares Model with Rank n Update".
+This module reproduces and extends the prediction experiments from the NeurIPS 2025 paper on manifold optimization for PPLS.
 
 Two experiment tracks are supported:
 
@@ -335,7 +334,7 @@ def empirical_coverage(y_true: np.ndarray, lower: np.ndarray, upper: np.ndarray)
 def _slm_method_name_from_cfg(slm_cfg: Dict) -> str:
     """Map SLM config to a human-readable method label.
 
-    NOTE: 等价于仿真实验中的 "SLM-Manifold" + finite-sample augmentations.
+    NOTE: Equivalent to "SLM-Manifold" in simulation experiments, with finite-sample augmentations.
     """
 
     opt = str(slm_cfg.get("optimizer", "")).lower()

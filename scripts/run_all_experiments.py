@@ -7,7 +7,10 @@ Runs (in order):
   4) Prediction application (synthetic; ppls_slm.apps.prediction)
   5) BRCA prediction benchmark (ppls_slm.apps.brca_prediction) [optional]
   6) BRCA calibration benchmark (ppls_slm.apps.brca_calibration) [optional]
-  7) Sync small paper artifacts into paper/artifacts (scripts/sync_artifacts.py)
+  7) CITE-seq prediction benchmark (ppls_slm.apps.citeseq_prediction) [optional]
+  8) PCCA simulation (ppls_slm.apps.pcca_simulation) [optional]
+  9) PPCA verification (ppls_slm.apps.ppca_verification) [optional]
+  10) Sync small paper artifacts into paper/artifacts (scripts/sync_artifacts.py)
 
 
 Usage (from repo root):
@@ -397,38 +400,38 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             if code != 0:
                 return code
 
-        # 6b) CITE-seq prediction benchmark (optional)
+        # 7) CITE-seq prediction benchmark (optional)
         if run_citeseq_prediction:
             cmd = [sys.executable, "-u", "-m", "ppls_slm.apps.citeseq_prediction", "--config", str(config_path)]
-            code = tee_run(cmd, cwd=root, log_path=logs_dir / "06b_citeseq_prediction.log", env=run_env)
+            code = tee_run(cmd, cwd=root, log_path=logs_dir / "07_citeseq_prediction.log", env=run_env)
             if code != 0:
                 return code
 
-        # 7) PCCA simulation (Table 1 extension)
+        # 8) PCCA simulation (Table 1 extension)
         if run_pcca_simulation:
             code = tee_run(
                 [sys.executable, "-u", "-m", "ppls_slm.apps.pcca_simulation", "--config", str(config_path)],
                 cwd=root,
-                log_path=logs_dir / "07_pcca_simulation.log",
+                log_path=logs_dir / "08_pcca_simulation.log",
                 env=run_env,
             )
             if code != 0:
                 return code
 
-        # 8) PPCA verification (Appendix)
+        # 9) PPCA verification (Appendix)
         if run_ppca_verification:
             code = tee_run(
                 [sys.executable, "-u", "-m", "ppls_slm.apps.ppca_verification", "--config", str(config_path)],
                 cwd=root,
-                log_path=logs_dir / "08_ppca_verification.log",
+                log_path=logs_dir / "09_ppca_verification.log",
                 env=run_env,
             )
             if code != 0:
                 return code
 
-        # 9) Sync artifacts
+        # 10) Sync artifacts
         if run_sync:
-            code = tee_run([sys.executable, "-u", "scripts/sync_artifacts.py"], cwd=root, log_path=logs_dir / "09_sync_artifacts.log", env=run_env)
+            code = tee_run([sys.executable, "-u", "scripts/sync_artifacts.py"], cwd=root, log_path=logs_dir / "10_sync_artifacts.log", env=run_env)
             if code != 0:
                 return code
 

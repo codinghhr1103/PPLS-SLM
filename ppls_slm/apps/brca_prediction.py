@@ -1,4 +1,4 @@
-"""Real-data prediction benchmark on TCGA-BRCA (Section 8.3 extension).
+"""Real-data prediction benchmark on TCGA-BRCA (Section 6.4.1).
 
 This script evaluates predictive accuracy on the BRCA TCGA paired multi-omics dataset:
 - X: gene expression (N=705, p=604)
@@ -458,7 +458,7 @@ def main():
     )
 
     cfg = load_config(args.config)
-    brca_cfg = get_experiment_cfg(cfg, "prediction_brca")
+    brca_cfg = get_experiment_cfg(cfg, "brca_prediction")
 
     require_keys(
         brca_cfg,
@@ -473,12 +473,12 @@ def main():
             "max_iter",
             "em_tol",
         ],
-        ctx="experiments.prediction_brca",
+        ctx="experiments.brca_prediction",
     )
 
     for k in ("thread_limit", "seed", "n_folds", "n_starts", "max_iter"):
-        coerce_int(brca_cfg, k, ctx="experiments.prediction_brca")
-    coerce_float(brca_cfg, "em_tol", ctx="experiments.prediction_brca")
+        coerce_int(brca_cfg, k, ctx="experiments.brca_prediction")
+    coerce_float(brca_cfg, "em_tol", ctx="experiments.brca_prediction")
 
     output_dir = str(brca_cfg["output_dir"])
     os.makedirs(output_dir, exist_ok=True)
@@ -558,7 +558,7 @@ def main():
     print(
 
 
-        "Config (prediction_brca): "
+        "Config (brca_prediction): "
         f"n_folds={int(brca_cfg['n_folds'])}, r_grid={r_grid}, slm_n_starts={slm_n_starts}, em_n_starts={em_n_starts}, slm_max_iter={slm_max_iter}, em_max_iter={em_max_iter}, "
         f"ridge_cv={ridge_cv}, x_top_k={x_top_k}, y_top_k={y_top_k}, feature_screening={feature_screening_method}, feature_screening_mix={feature_screening_mix}, "
         f"slm_optimizer={slm_optimizer}, slm_gtol={slm_gtol}, slm_xtol={slm_xtol}, slm_barrier_tol={slm_barrier_tol}, slm_constraint_slack={slm_constraint_slack}, "

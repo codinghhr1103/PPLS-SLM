@@ -11,7 +11,7 @@ Outputs (under experiments.citeseq_prediction.output_dir)
 - citeseq_calibration_per_fold.csv
 - citeseq_calibration_summary.csv
 - citeseq_selected_shrinkage_alpha.csv (diagnostic)
-- citeseq_loadings_top.csv (Phase 2; best-effort)
+- citeseq_loadings_top.csv (loading interpretability; best-effort)
 
 
 """
@@ -938,7 +938,7 @@ def main() -> int:
             )
             alpha_diag.to_csv(os.path.join(output_dir, "citeseq_selected_shrinkage_alpha.csv"), index=False)
 
-    # Phase 2 (best-effort): loading interpretability on one fitted model
+    # Loading interpretability (best-effort): refit on full subsample at best r
     try:
         r_best = None
         try:

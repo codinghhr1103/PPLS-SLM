@@ -1,1 +1,1 @@
-"""Reproduction applications (Section 8 experiments)."""
+"""Reproduction applications (Section 6 experiments)."""

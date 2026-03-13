@@ -152,7 +152,7 @@ def _euclidean_gradient_from_parts(
     hat_Phi_x = Phi_x / se2
     hat_Phi_y = Phi_y / sf2
 
-    # --- W, C gradients (paper Eqs. (20)-(21))
+    # --- W, C gradients (Remark 2 in Appendix D.1)
     SxxW = S_xx @ W
     SxyC = S_xy @ C
     grad_W = -2.0 * (SxxW * hat_Phi_x[np.newaxis, :] + SxyC * Phi_xy[np.newaxis, :])

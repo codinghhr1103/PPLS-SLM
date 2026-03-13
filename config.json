@@ -216,7 +216,7 @@
 
 
     },
-    "prediction_brca": {
+    "brca_prediction": {
       "thread_limit": 1,
       "brca_data": "application/brca_data_w_subtypes.csv.zip",
       "output_dir": "results_prediction_brca",
@@ -324,7 +324,7 @@
 
 
 
-    "calibration_brca": {
+    "brca_calibration": {
 
       "thread_limit": 1,
       "brca_data": "application/brca_data_w_subtypes.csv.zip",

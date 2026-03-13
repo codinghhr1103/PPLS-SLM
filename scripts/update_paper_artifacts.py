@@ -1,11 +1,7 @@
-"""Sync experiment outputs into `paper/artifacts/`.
+"""Convenience wrapper: sync experiment outputs into paper/artifacts/. Equivalent to: python scripts/sync_artifacts.py
 
 Usage (repo root):
   python scripts/update_paper_artifacts.py
-
-This is a tiny wrapper around:
-  python scripts/sync_artifacts.py
-
 """
 
 from __future__ import annotations

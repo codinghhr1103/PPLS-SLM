@@ -14,10 +14,10 @@ METHOD_REGISTRY = {
     "ecm":          {"display": "ECM",           "role": "baseline"},
 }
 
-# Simulation experiments (Section 8.1): all 6 methods
+# Simulation experiments (Section 6.1): all 6 methods
 SIMULATION_METHODS = ["slm_manifold", "bcd_slm", "slm_interior", "slm_oracle", "em", "ecm"]
 
-# Prediction experiments (Section 8.3): no SLM-Interior, add PLSR/Ridge
+# Prediction experiments (Section 6.2): no SLM-Interior, add PLSR/Ridge
 PREDICTION_METHODS = ["slm_manifold", "em", "plsr", "ridge"]
 
 def display_name(key: str) -> str:

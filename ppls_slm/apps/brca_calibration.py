@@ -358,7 +358,7 @@ def main():
     )
 
     cfg = load_config(args.config)
-    calib_cfg = get_experiment_cfg(cfg, "calibration_brca")
+    calib_cfg = get_experiment_cfg(cfg, "brca_calibration")
 
     require_keys(
         calib_cfg,
@@ -372,12 +372,12 @@ def main():
             "n_starts",
             "max_iter",
         ],
-        ctx="experiments.calibration_brca",
+        ctx="experiments.brca_calibration",
     )
 
 
     for k in ("thread_limit", "seed", "n_folds", "n_starts", "max_iter"):
-        coerce_int(calib_cfg, k, ctx="experiments.calibration_brca")
+        coerce_int(calib_cfg, k, ctx="experiments.brca_calibration")
 
     output_dir = str(calib_cfg["output_dir"])
     os.makedirs(output_dir, exist_ok=True)
@@ -445,7 +445,7 @@ def main():
     print(
 
 
-        "Config (calibration_brca): "
+        "Config (brca_calibration): "
         f"n_folds={int(calib_cfg['n_folds'])}, slm_n_starts={slm_n_starts}, slm_max_iter={slm_max_iter}, "
         f"x_top_k={x_top_k}, y_top_k={y_top_k}, feature_screening={feature_screening_method}, feature_screening_mix={feature_screening_mix}, "
         f"slm_optimizer={slm_optimizer}, slm_gtol={slm_gtol}, slm_xtol={slm_xtol}, slm_barrier_tol={slm_barrier_tol}, slm_constraint_slack={slm_constraint_slack}, "

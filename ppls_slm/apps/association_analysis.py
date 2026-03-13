@@ -1,9 +1,8 @@
 """
-Application 1: Association Analysis on Multi-Omics Data
+Association Analysis on Multi-Omics Data
 ========================================================
 
-Reproduces the multi-omics association analysis from Section 8.2 of the paper
-"Scalar Likelihood Method for Probabilistic Partial Least Squares Model with Rank n Update".
+Reproduces the multi-omics association analysis from Section 6.4 of the paper.
 
 This application:
 1. Loads (or simulates) paired gene-expression / protein-expression data.
@@ -15,7 +14,7 @@ This application:
 6. Compares the number of detected pairs between SLM and EM at multiple
    significance thresholds and reports the top-10 gene-protein pairs.
 
-Real TCGA-BRCA Data (Paper Section 8.2: N=705, p=604 genes, q=223 proteins)
+Real TCGA-BRCA Data (Paper Section 6.4.1: N=705, p=604 genes, q=223 proteins)
 -----------------------------------------------------------------------------
 Download the following two files from:
     https://linkedomics.org/data_download/TCGA-BRCA/
@@ -305,7 +304,7 @@ def subsample_omics(X: np.ndarray, Y: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Algorithm 2 — correlation screening (paper Section 8.2)
+#  Algorithm 2 — correlation screening (paper Section 6.4.1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_correlations_and_screen(

@@ -1,8 +1,4 @@
-"""Backward-compatible wrapper for PCCA simulation.
-
-Preferred entry:
-  python -m ppls_slm.apps.pcca_simulation --config config.json
-"""
+"""Convenience wrapper for PCCA simulation. Equivalent to: python -m ppls_slm.apps.pcca_simulation --config config.json"""
 
 from __future__ import annotations
 

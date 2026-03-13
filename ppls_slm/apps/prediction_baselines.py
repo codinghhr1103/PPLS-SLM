@@ -1,4 +1,4 @@
-"""Baseline predictors for the prediction experiments (Section 8.3).
+"""Baseline predictors for the prediction experiments (Section 6.2--6.3).
 
 This module provides two non-PPLS baselines:
 - Classical PLS regression (PLSR): sklearn.cross_decomposition.PLSRegression

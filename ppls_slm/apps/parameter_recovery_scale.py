@@ -3,7 +3,7 @@
 This entry point runs a reproducible parameter-recovery study over a grid of
 larger \\(p, q, r\\) configurations using random orthogonal loading matrices.
 It is designed for the manuscript's scale-validation experiment where
-SLM-Fixed / SLM-Oracle are compared against EM / ECM.
+SLM-Manifold / SLM-Oracle are compared against EM / ECM.
 """
 
 from __future__ import annotations

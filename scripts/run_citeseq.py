@@ -1,8 +1,8 @@
-"""Run CITE-seq Phase 1 (prediction + calibration).
+"""Run CITE-seq prediction, calibration, and loading export.
 
 
 Usage (repo root):
-  python scripts/run_citeseq_phase1.py
+  python scripts/run_citeseq.py
 
 This is intentionally a single-purpose wrapper that delegates to:
   python -m ppls_slm.apps.citeseq_prediction --config config.json
@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run CITE-seq Phase 1 (prediction + calibration)")
+    p = argparse.ArgumentParser(description="Run CITE-seq prediction benchmark (prediction + calibration + loadings)")
     p.add_argument("--config", type=str, default="config.json", help="Path to config JSON (default: config.json)")
     return p.parse_args()
 

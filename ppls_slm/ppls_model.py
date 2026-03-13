@@ -290,7 +290,7 @@ class PPLSConstraints:
 
     @staticmethod
     def inequality_constraints(p, q, r, slack=1e-3):
-        """Legacy wrapper."""
+        """Convenience wrapper for PPLSConstraints.get_inequality_constraints()."""
         return PPLSConstraints.get_inequality_constraints(p, q, r, slack)
 
 
@@ -299,26 +299,27 @@ def estimate_noise_variance(
     r: int,
     mp_correction_threshold: float = 0.1,
 ) -> float:
-    r"""
-    基于特征值分离的噪声方差估计器。
+    r"""Spectral noise variance estimator based on eigenvalue separation.
 
-    利用 PPLS 模型中协方差矩阵 \(\Sigma = W\Sigma_tW^\top + \sigma^2 I\) 的谱结构，
-    取样本协方差矩阵最小 \(d-r\) 个特征值的均值来估计 \(\sigma^2\)。
-
+    Exploits the spectral structure of the PPLS marginal covariance
+    \(\Sigma = W\Sigma_tW^\top + \sigma^2 I\): the smallest \(d-r\)
+    eigenvalues of the sample covariance equal \(\sigma^2\) in population.
+    Averaging them yields the estimator.
 
     Parameters
     ----------
     data : np.ndarray, shape (N, d)
-        观测数据矩阵
+        Observation matrix.
     r : int
-        潜在维度
+        Latent dimension.
     mp_correction_threshold : float
-        当 d/N 超过此阈值时启用 Marchenko--Pastur 一阶修正
+        Apply first-order Marchenko--Pastur correction when d/N exceeds
+        this threshold.
 
     Returns
     -------
     sigma2 : float
-        估计的噪声方差
+        Estimated noise variance.
     """
     if data.ndim != 2:
         raise ValueError(f"data must be 2D array, got shape={getattr(data, 'shape', None)}")
@@ -328,17 +329,17 @@ def estimate_noise_variance(
     if not (0 <= r < d):
         raise ValueError(f"latent dimension r must satisfy 0 <= r < d, got r={r}, d={d}")
 
-    # 中心化样本协方差 (1/N)
+    # Centered sample covariance (1/N)
     data_centered = data - data.mean(axis=0, keepdims=True)
     S = (data_centered.T @ data_centered) / float(N)
 
-    # 特征值（numpy.eigvalsh 返回升序）
+    # Eigenvalues (numpy.eigvalsh returns ascending order)
     eigenvalues = np.linalg.eigvalsh(S)
 
-    # 最小 d-r 个特征值的均值
+    # Mean of the smallest d-r eigenvalues
     sigma2 = float(np.mean(eigenvalues[: d - r]))
 
-    # Marchenko--Pastur 一阶修正（当 d/N 不可忽略时）
+    # First-order Marchenko--Pastur correction (when d/N is non-negligible)
     if (N > 1) and (d / float(N) > float(mp_correction_threshold)):
         sigma2 /= (1.0 + (d - r) / float(N - 1))
 
