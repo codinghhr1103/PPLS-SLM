@@ -223,8 +223,51 @@ def predict_recalibrated_mean(
     return np.asarray(model.predict(X_head), dtype=float)
 
 
+def fit_perprotein_latent_head(
+    X_train_s: np.ndarray,
+    Y_train_s: np.ndarray,
+    params: Dict,
+    *,
+    shrinkage_alpha: float = 1.0,
+    cv: Optional[int] = 3,
+    alphas: Optional[Sequence[float]] = None,
+):
+    """Per-protein Ridge on posterior latent features.
+
+    Fits a separate Ridge per protein column, allowing per-protein regularization
+    that better handles heterogeneous predictability across proteins.
+    """
+    from sklearn.linear_model import RidgeCV
+
+    if alphas is None:
+        alphas = np.logspace(-4, 4, 17)
+
+    Z_train = posterior_latent_mean(X_train_s, params, shrinkage_alpha=float(shrinkage_alpha))
+
+    q = Y_train_s.shape[1]
+    models = []
+    for j in range(q):
+        m = RidgeCV(alphas=np.asarray(list(alphas), dtype=float), cv=cv, fit_intercept=True)
+        m.fit(Z_train, Y_train_s[:, j])
+        models.append(m)
+    return {"models": models, "mode": "perprotein"}
+
+
+def predict_perprotein_latent(
+    X_new_s: np.ndarray,
+    params: Dict,
+    head: Dict,
+    *,
+    shrinkage_alpha: float = 1.0,
+) -> np.ndarray:
+    """Predict Y using per-protein heads on posterior latent means."""
+    Z_new = posterior_latent_mean(X_new_s, params, shrinkage_alpha=float(shrinkage_alpha))
+    models = head["models"]
+    return np.column_stack([m.predict(Z_new) for m in models])
+
 
 def predict_conditional_covariance(
+
     params: Dict,
     *,
     shrinkage_alpha: float = 1.0,

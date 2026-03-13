@@ -32,13 +32,14 @@ import pandas as pd
 from ppls_slm.bcd_slm import BCDScalarLikelihoodMethod
 
 from ppls_slm.apps.data_utils import load_citeseq_data, standardize_train_test, unstandardize_cov, unstandardize_y
+from ppls_slm.apps.data_utils import select_feature_indices
+
 from ppls_slm.apps.prediction_baselines import compute_regression_metrics, run_plsr_prediction, run_ridge_prediction
 from ppls_slm.apps.prediction_common import (
     aggregate_prediction_by_r,
     build_cv_folds,
     build_starting_points,
     fit_ppls_em,
-    fit_ppls_slm,
     select_best_r,
 )
 from ppls_slm.apps.prediction import (
@@ -205,8 +206,9 @@ def _fit_ppls_bcd(
         n_starts=n_starts,
         seed=seed,
         use_data_driven_init=True,
-        data_driven_init_fn=_data_driven_theta0,
+        data_driven_init_fn=lambda X0, Y0, r0: _data_driven_theta0(X0, Y0, r=int(r0)),
     )
+
 
 
     bcd = BCDScalarLikelihoodMethod(
@@ -278,7 +280,12 @@ def run_citeseq_prediction(
     slm_latent_recalibration_include_x: bool = True,
     alphas_for_coverage: Sequence[float] = (0.05, 0.10, 0.20),
     em_timeout_sec: float = 2 * 3600,
+    x_top_k: Optional[int] = None,
+    y_top_k: Optional[int] = None,
+    feature_screening: str = "variance",
+    feature_screening_mix: float = 0.5,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
 
 
     """K-fold CV prediction + calibration on CITE-seq data.
@@ -307,7 +314,25 @@ def run_citeseq_prediction(
         X_test = X[test_idx]
         Y_test = Y[test_idx]
 
+        # ── Feature screening (train-only, mirroring BRCA protocol) ──
+        if x_top_k is not None or y_top_k is not None:
+            x_idx_fs, y_idx_fs = select_feature_indices(
+                X_train,
+                Y_train,
+                x_top_k=int(x_top_k) if x_top_k is not None else None,
+                y_top_k=int(y_top_k) if y_top_k is not None else None,
+                method=str(feature_screening),
+                hybrid_mix=float(feature_screening_mix),
+            )
+            if x_idx_fs is not None:
+                X_train = X_train[:, x_idx_fs]
+                X_test = X_test[:, x_idx_fs]
+            if y_idx_fs is not None:
+                Y_train = Y_train[:, y_idx_fs]
+                Y_test = Y_test[:, y_idx_fs]
+
         X_train_s, Y_train_s, X_test_s, Y_test_s, sx, sy = standardize_train_test(X_train, Y_train, X_test, Y_test)
+
         fold_data.append(
             {
                 "fold_idx": int(fold_idx),
@@ -362,26 +387,21 @@ def run_citeseq_prediction(
                 label=f"{slm_method} r={r} fold {fold_idx + 1}/{n_folds} (SLM fit)",
                 heartbeat_sec=float(heartbeat_sec),
             ):
-                slm_params = fit_ppls_slm(
+                slm_params = _fit_ppls_bcd(
                     fd["X_train_s"],
                     fd["Y_train_s"],
                     r=int(r),
                     n_starts=int(slm_n_starts),
                     seed=int(seed + fold_idx),
-                    max_iter=int(slm_max_iter),
-                    optimizer=str(slm_optimizer),
+                    max_outer_iter=int(slm_max_iter),
+                    n_cg_steps_W=5,
+                    n_cg_steps_C=5,
+                    tolerance=1e-4,
                     use_noise_preestimation=bool(slm_use_noise_preestimation),
-                    gtol=float(slm_gtol),
-                    xtol=float(slm_xtol),
-                    barrier_tol=float(slm_barrier_tol),
-                    initial_constr_penalty=1.0,
-                    constraint_slack=float(slm_constraint_slack),
-                    verbose=bool(slm_verbose),
-                    progress_every=int(max(1, slm_progress_every)),
                     early_stop_patience=slm_early_stop_patience,
                     early_stop_rel_improvement=slm_early_stop_rel_improvement,
-                    data_driven_init_fn=_data_driven_theta0,
                 )
+
 
 
 
@@ -403,26 +423,21 @@ def run_citeseq_prediction(
                         shrinkage_alpha, _cv, cov_scale = select_shrinkage_alpha_nested_cv(
                             fd["X_train_s"],
                             fd["Y_train_s"],
-                            fit_model_fn=lambda X_in, Y_in, inner_seed: fit_ppls_slm(
+                            fit_model_fn=lambda X_in, Y_in, inner_seed: _fit_ppls_bcd(
                                 X_in,
                                 Y_in,
                                 r=int(r),
                                 n_starts=int(inner_n_starts),
                                 seed=int(inner_seed),
-                                max_iter=int(inner_max_iter),
-                                optimizer=str(slm_optimizer),
+                                max_outer_iter=int(inner_max_iter),
+                                n_cg_steps_W=5,
+                                n_cg_steps_C=5,
+                                tolerance=1e-4,
                                 use_noise_preestimation=bool(slm_use_noise_preestimation),
-                                gtol=float(slm_gtol),
-                                xtol=float(slm_xtol),
-                                barrier_tol=float(slm_barrier_tol),
-                                initial_constr_penalty=1.0,
-                                constraint_slack=float(slm_constraint_slack),
-                                verbose=bool(slm_adaptive_shrinkage_verbose),
-                                progress_every=999999,
                                 early_stop_patience=slm_early_stop_patience,
                                 early_stop_rel_improvement=slm_early_stop_rel_improvement,
-                                data_driven_init_fn=_data_driven_theta0,
                             ),
+
 
                             alpha_grid=grid,
                             n_folds=int(slm_adaptive_shrinkage_folds),
@@ -891,7 +906,12 @@ def main() -> int:
         slm_latent_recalibration_include_x=bool(c_cfg.get("slm_latent_recalibration_include_x", True)),
         slm_latent_recalibration_alphas=c_cfg.get("slm_latent_recalibration_alphas", None),
         em_timeout_sec=float(c_cfg.get("em_timeout_sec_prediction", 2 * 3600)),
+        x_top_k=c_cfg.get("x_top_k", None),
+        y_top_k=c_cfg.get("y_top_k", None),
+        feature_screening=str(c_cfg.get("feature_screening", "variance")),
+        feature_screening_mix=float(c_cfg.get("feature_screening_mix", 0.5)),
     )
+
 
 
     df_pred.to_csv(os.path.join(output_dir, "citeseq_prediction_per_fold.csv"), index=False)
@@ -928,39 +948,57 @@ def main() -> int:
 
         from sklearn.preprocessing import StandardScaler
 
-        sx = StandardScaler().fit(Xp)
-        sy = StandardScaler().fit(Yp)
-        Xs = sx.transform(Xp)
-        Ys = sy.transform(Yp)
-        params_best = fit_ppls_slm(
+        # Apply same feature screening for loadings export
+        x_top_k_val = c_cfg.get("x_top_k", None)
+        y_top_k_val = c_cfg.get("y_top_k", None)
+        Xp_load, Yp_load = Xp, Yp
+        gene_names_load, protein_names_load = gene_names, protein_names
+        if x_top_k_val is not None or y_top_k_val is not None:
+            x_idx_l, y_idx_l = select_feature_indices(
+                Xp,
+                Yp,
+                x_top_k=int(x_top_k_val) if x_top_k_val is not None else None,
+                y_top_k=int(y_top_k_val) if y_top_k_val is not None else None,
+                method=str(c_cfg.get("feature_screening", "variance")),
+                hybrid_mix=float(c_cfg.get("feature_screening_mix", 0.5)),
+            )
+            if x_idx_l is not None:
+                Xp_load = Xp[:, x_idx_l]
+                gene_names_load = [gene_names[i] for i in x_idx_l]
+            if y_idx_l is not None:
+                Yp_load = Yp[:, y_idx_l]
+                protein_names_load = [protein_names[i] for i in y_idx_l]
+
+        sx = StandardScaler().fit(Xp_load)
+        sy = StandardScaler().fit(Yp_load)
+        Xs = sx.transform(Xp_load)
+        Ys = sy.transform(Yp_load)
+        params_best = _fit_ppls_bcd(
             Xs,
             Ys,
             r=int(r_best),
             n_starts=int(c_cfg.get("slm_n_starts", 4)),
             seed=int(c_cfg.get("seed", 42)),
-            max_iter=int(c_cfg.get("slm_max_iter", 200)),
-            optimizer=str(c_cfg.get("slm_optimizer", "manifold")),
+            max_outer_iter=int(c_cfg.get("slm_max_iter", 200)),
+            n_cg_steps_W=5,
+            n_cg_steps_C=5,
+            tolerance=1e-4,
             use_noise_preestimation=bool(c_cfg.get("slm_use_noise_preestimation", True)),
-            gtol=float(c_cfg.get("slm_gtol", 0.01)),
-            xtol=float(c_cfg.get("slm_xtol", 0.01)),
-            barrier_tol=float(c_cfg.get("slm_barrier_tol", 0.01)),
-            initial_constr_penalty=1.0,
-            constraint_slack=float(c_cfg.get("slm_constraint_slack", 0.005)),
-            verbose=False,
-            progress_every=10,
-            data_driven_init_fn=_data_driven_theta0,
+            early_stop_patience=c_cfg.get("slm_early_stop_patience", None),
+            early_stop_rel_improvement=c_cfg.get("slm_early_stop_rel_improvement", None),
         )
 
 
         _export_top_loadings(
             params_best,
-            gene_names,
-            protein_names,
+            gene_names_load,
+            protein_names_load,
             out_csv=os.path.join(output_dir, "citeseq_loadings_top.csv"),
             top_genes=10,
             top_proteins=5,
             n_components=5,
         )
+
     except Exception as e:
         print(f"[WARN] loading export failed: {e}", flush=True)
 
