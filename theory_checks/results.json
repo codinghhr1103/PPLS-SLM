@@ -1,0 +1,47 @@
+{
+  "all_passed": true,
+  "results": [
+    {
+      "module": "check_lemma_rankn",
+      "name": "Lemma rank-n determinant/inverse identity",
+      "trials": 200,
+      "max_det_rel": 3.0833248858816393e-15,
+      "max_inv_rel": 1.092788083127442e-15,
+      "status": "PASS"
+    },
+    {
+      "module": "check_pcca_schur_pd",
+      "name": "PCCA Schur complement and positive definiteness",
+      "trials": 200,
+      "max_rel": 5.701920166955375e-15,
+      "min_eig_schur": 0.013789423165600062,
+      "min_eig_joint": 0.013789423165599871,
+      "status": "PASS"
+    },
+    {
+      "module": "check_scalar_expansion",
+      "name": "Theorem A scalar expansion vs matrix-form objective",
+      "trials": 120,
+      "max_abs_diff": 5.1514348342607263e-14,
+      "status": "PASS"
+    },
+    {
+      "module": "check_bcd_propositions",
+      "name": "Propositions 4-5 (closed-form theta update and cubic b update)",
+      "trials": 300,
+      "max_theta_grad_fd": 8.881784197001252e-10,
+      "max_cubic_residual": 4.6629367034256575e-15,
+      "positive_root_uniqueness_cases": 300,
+      "status": "PASS"
+    },
+    {
+      "module": "check_noise_theorem",
+      "name": "Theorem 4 spectral noise estimator empirical verification",
+      "trials": 300,
+      "mae": 0.0030447959457649554,
+      "expectation_bound_rhs": 0.003903600291794133,
+      "bound_hit_rate": 0.9033333333333333,
+      "status": "PASS"
+    }
+  ]
+}
