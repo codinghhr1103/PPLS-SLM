@@ -3,6 +3,7 @@
 This subpackage intentionally stays dependency-free.
 """
 
+from .json_io import load_json, save_json
 from .logging_utils import setup_logging
 from .paths import ensure_dir, repo_root, resolve_path
 from .random_utils import set_global_seed
@@ -13,5 +14,8 @@ __all__ = [
     "resolve_path",
     "set_global_seed",
     "setup_logging",
+    "load_json",
+    "save_json",
 ]
+
 

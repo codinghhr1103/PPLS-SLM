@@ -42,8 +42,14 @@ from ppls_slm.apps.data_utils import (
 
 
 
-from ppls_slm.algorithms import EMAlgorithm, InitialPointGenerator, ScalarLikelihoodMethod
 from ppls_slm.apps.prediction_baselines import compute_regression_metrics, run_plsr_prediction, run_ridge_prediction
+from ppls_slm.apps.prediction_common import (
+    aggregate_prediction_by_r,
+    build_cv_folds,
+    fit_ppls_em,
+    fit_ppls_slm,
+    select_best_r,
+)
 from ppls_slm.apps.prediction import (
     _data_driven_theta0,
     compute_credible_intervals,
@@ -70,88 +76,8 @@ from ppls_slm.apps.prediction import (
 
 
 
-def _fit_ppls_slm(
-
-    X_train_s,
-    Y_train_s,
-    *,
-    r: int,
-    n_starts: int,
-    seed: int,
-    max_iter: int,
-    optimizer: str = "trust-constr",
-    use_noise_preestimation: bool = True,
-    gtol: float = 1e-3,
-    xtol: float = 1e-3,
-    barrier_tol: float = 1e-3,
-    initial_constr_penalty: float = 1.0,
-    constraint_slack: float = 1e-2,
-    verbose: bool = False,
-    progress_every: int = 1,
-    early_stop_patience: Optional[int] = None,
-    early_stop_rel_improvement: Optional[float] = None,
-) -> Dict:
-    p, q = X_train_s.shape[1], Y_train_s.shape[1]
-
-    init_gen = InitialPointGenerator(p=p, q=q, r=r, n_starts=n_starts, random_seed=seed)
-    starting_points = init_gen.generate_starting_points()
-    if starting_points:
-        starting_points[0] = _data_driven_theta0(X_train_s, Y_train_s, r=r)
-
-    slm = ScalarLikelihoodMethod(
-
-        p=p,
-        q=q,
-        r=r,
-        optimizer=str(optimizer),
-        max_iter=int(max_iter),
-        use_noise_preestimation=bool(use_noise_preestimation),
-        gtol=float(gtol),
-        xtol=float(xtol),
-        barrier_tol=float(barrier_tol),
-        initial_constr_penalty=float(initial_constr_penalty),
-        constraint_slack=float(constraint_slack),
-        verbose=bool(verbose),
-        progress_every=int(progress_every),
-        early_stop_patience=early_stop_patience,
-        early_stop_rel_improvement=early_stop_rel_improvement,
-    )
-    res = slm.fit(X_train_s, Y_train_s, starting_points)
-
-    return {
-        "W": res["W"],
-        "C": res["C"],
-        "B": res["B"],
-        "Sigma_t": res["Sigma_t"],
-        "sigma_e2": res["sigma_e2"],
-        "sigma_f2": res["sigma_f2"],
-        "sigma_h2": res["sigma_h2"],
-    }
 
 
-
-
-def _fit_ppls_em(X_train_s, Y_train_s, *, r: int, n_starts: int, seed: int, max_iter: int, tol: float) -> Dict:
-    p, q = X_train_s.shape[1], Y_train_s.shape[1]
-
-    init_gen = InitialPointGenerator(p=p, q=q, r=r, n_starts=n_starts, random_seed=seed)
-    starting_points = init_gen.generate_starting_points()
-    if starting_points:
-        starting_points[0] = _data_driven_theta0(X_train_s, Y_train_s, r=r)
-
-    em = EMAlgorithm(p=p, q=q, r=r, max_iter=int(max_iter), tolerance=float(tol))
-
-    res = em.fit(X_train_s, Y_train_s, starting_points)
-
-    return {
-        "W": res["W"],
-        "C": res["C"],
-        "B": res["B"],
-        "Sigma_t": res["Sigma_t"],
-        "sigma_e2": res["sigma_e2"],
-        "sigma_f2": res["sigma_f2"],
-        "sigma_h2": res["sigma_h2"],
-    }
 
 
 def _predict_ppls(X_test_s, params: Dict, *, shrinkage_alpha: float = 1.0):
@@ -210,9 +136,8 @@ def run_brca_prediction(
     import time
 
     N = X.shape[0]
-    rng = np.random.RandomState(seed)
-    indices = rng.permutation(N)
-    folds = np.array_split(indices, int(n_folds))
+    folds = build_cv_folds(n_samples=N, n_folds=int(n_folds), seed=int(seed))
+
 
     slm_method = slm_method_name(slm_optimizer=slm_optimizer, adaptive=slm_adaptive_shrinkage)
     latent_head_alphas = slm_latent_recalibration_alphas or [1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0]
@@ -303,7 +228,7 @@ def run_brca_prediction(
                 f"[{slm_method}] r={r} fold {fold_idx + 1}/{n_folds} (starts={slm_n_starts}, max_iter={slm_max_iter})...",
                 flush=True,
             )
-            slm_params = _fit_ppls_slm(
+            slm_params = fit_ppls_slm(
                 fd["X_train_s"],
                 fd["Y_train_s"],
                 r=r,
@@ -321,7 +246,9 @@ def run_brca_prediction(
                 progress_every=int(slm_progress_every),
                 early_stop_patience=slm_early_stop_patience,
                 early_stop_rel_improvement=slm_early_stop_rel_improvement,
+                data_driven_init_fn=_data_driven_theta0,
             )
+
 
             shrinkage_alpha_slm = 1.0
             if bool(slm_adaptive_shrinkage):
@@ -337,7 +264,7 @@ def run_brca_prediction(
                     shrinkage_alpha_slm, _cv, _cov_scale = select_shrinkage_alpha_nested_cv(
                         fd["X_train_s"],
                         fd["Y_train_s"],
-                        fit_model_fn=lambda X_in, Y_in, inner_seed: _fit_ppls_slm(
+                        fit_model_fn=lambda X_in, Y_in, inner_seed: fit_ppls_slm(
                             X_in,
                             Y_in,
                             r=r,
@@ -355,7 +282,9 @@ def run_brca_prediction(
                             progress_every=int(slm_progress_every),
                             early_stop_patience=slm_early_stop_patience,
                             early_stop_rel_improvement=slm_early_stop_rel_improvement,
+                            data_driven_init_fn=_data_driven_theta0,
                         ),
+
                         alpha_grid=grid,
                         n_folds=int(slm_adaptive_shrinkage_folds),
                         seed=int(seed + fold_idx),
@@ -442,7 +371,17 @@ def run_brca_prediction(
             # --- PPLS-EM ---
             t_em0 = time.perf_counter()
             print(f"[PPLS-EM] r={r} fold {fold_idx + 1}/{n_folds} (starts={em_n_starts}, max_iter={em_max_iter})...", flush=True)
-            em_params = _fit_ppls_em(fd["X_train_s"], fd["Y_train_s"], r=r, n_starts=em_n_starts, seed=seed + fold_idx, max_iter=em_max_iter, tol=em_tol)
+            em_params = fit_ppls_em(
+                fd["X_train_s"],
+                fd["Y_train_s"],
+                r=r,
+                n_starts=em_n_starts,
+                seed=seed + fold_idx,
+                max_iter=em_max_iter,
+                tol=em_tol,
+                data_driven_init_fn=_data_driven_theta0,
+            )
+
             y_pred_s, _Cov_s = _predict_ppls(fd["X_test_s"], em_params)
             y_pred = unstandardize_y(y_pred_s, fd["sy"])
             m = compute_regression_metrics(fd["Y_test"], y_pred)
@@ -491,36 +430,7 @@ def run_brca_prediction(
 
 
 
-def _aggregate_by_r(df: pd.DataFrame) -> pd.DataFrame:
-    out = []
-    for (method, r), sub in df.groupby(["method", "r"], sort=False):
-        out.append(
-            {
-                "method": method,
-                "r": r,
-                "mse_mean": float(sub["mse"].mean()),
-                "mse_std": float(sub["mse"].std(ddof=1)),
-                "mae_mean": float(sub["mae"].mean()),
-                "mae_std": float(sub["mae"].std(ddof=1)),
-                "r2_mean": float(sub["r2"].mean()),
-                "r2_std": float(sub["r2"].std(ddof=1)),
-            }
-        )
-    return pd.DataFrame(out)
 
-
-def _select_best_r(df_by_r: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for method, sub in df_by_r.groupby("method", sort=False):
-        if method == "Ridge":
-            best = sub.iloc[0]
-        else:
-            # r stored as int for these methods
-            sub2 = sub.copy()
-            sub2["r_int"] = sub2["r"].astype(int)
-            best = sub2.sort_values(["mse_mean", "r_int"], ascending=[True, True]).iloc[0]
-        rows.append(best.drop(labels=[c for c in ("r_int",) if c in best.index]))
-    return pd.DataFrame(rows)
 
 
 def parse_args():
@@ -714,10 +624,12 @@ def main():
 
     df.to_csv(os.path.join(output_dir, "brca_prediction_per_fold.csv"), index=False)
 
-    df_by_r = _aggregate_by_r(df)
+    df_by_r = aggregate_prediction_by_r(df, ddof=1)
+
     df_by_r.to_csv(os.path.join(output_dir, "brca_prediction_by_r.csv"), index=False)
 
-    df_best = _select_best_r(df_by_r)
+    df_best = select_best_r(df_by_r, ridge_method_names=("Ridge",), ignore_dash_r=False)
+
     df_best.to_csv(os.path.join(output_dir, "brca_prediction_summary.csv"), index=False)
 
     # Diagnostic: selected adaptive shrinkage alphas (when enabled)

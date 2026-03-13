@@ -32,7 +32,7 @@ from ppls_slm.apps.data_utils import (
 
 
 
-from ppls_slm.algorithms import InitialPointGenerator, ScalarLikelihoodMethod
+from ppls_slm.apps.prediction_common import build_cv_folds, fit_ppls_slm
 from ppls_slm.apps.prediction import (
     _data_driven_theta0,
     compute_credible_intervals,
@@ -61,59 +61,8 @@ from ppls_slm.apps.prediction import (
 
 
 
-def _fit_slm(
 
-    X_train_s,
-    Y_train_s,
-    *,
-    r: int,
-    n_starts: int,
-    seed: int,
-    max_iter: int,
-    optimizer: str,
-    use_noise_preestimation: bool,
-    gtol: float,
-    xtol: float,
-    barrier_tol: float,
-    initial_constr_penalty: float,
-    constraint_slack: float,
-    verbose: bool,
-    progress_every: int,
-) -> Dict:
-    p, q = X_train_s.shape[1], Y_train_s.shape[1]
 
-    init_gen = InitialPointGenerator(p=p, q=q, r=r, n_starts=n_starts, random_seed=seed)
-    starting_points = init_gen.generate_starting_points()
-    if starting_points:
-        starting_points[0] = _data_driven_theta0(X_train_s, Y_train_s, r=r)
-
-    slm = ScalarLikelihoodMethod(
-
-        p=p,
-        q=q,
-        r=r,
-        optimizer=str(optimizer),
-        max_iter=int(max_iter),
-        use_noise_preestimation=bool(use_noise_preestimation),
-        gtol=float(gtol),
-        xtol=float(xtol),
-        barrier_tol=float(barrier_tol),
-        initial_constr_penalty=float(initial_constr_penalty),
-        constraint_slack=float(constraint_slack),
-        verbose=bool(verbose),
-        progress_every=int(progress_every),
-    )
-    res = slm.fit(X_train_s, Y_train_s, starting_points)
-
-    return {
-        "W": res["W"],
-        "C": res["C"],
-        "B": res["B"],
-        "Sigma_t": res["Sigma_t"],
-        "sigma_e2": res["sigma_e2"],
-        "sigma_f2": res["sigma_f2"],
-        "sigma_h2": res["sigma_h2"],
-    }
 
 
 
@@ -175,9 +124,8 @@ def run_calibration(
     and then evaluate all alpha values on the same predictive distribution.
     """
     N = X.shape[0]
-    rng = np.random.RandomState(seed)
-    indices = rng.permutation(N)
-    folds = np.array_split(indices, int(n_folds))
+    folds = build_cv_folds(n_samples=N, n_folds=int(n_folds), seed=int(seed))
+
 
     slm_method = slm_method_name(slm_optimizer=slm_optimizer, adaptive=slm_adaptive_shrinkage)
 
@@ -211,7 +159,7 @@ def run_calibration(
         X_train_s, Y_train_s, X_test_s, _Y_test_s, _sx, sy = standardize_train_test(X_train, Y_train, X_test, Y_test)
 
 
-        params = _fit_slm(
+        params = fit_ppls_slm(
             X_train_s,
             Y_train_s,
             r=r,
@@ -227,7 +175,9 @@ def run_calibration(
             constraint_slack=slm_constraint_slack,
             verbose=bool(slm_verbose),
             progress_every=int(slm_progress_every),
+            data_driven_init_fn=_data_driven_theta0,
         )
+
 
 
 
@@ -248,7 +198,7 @@ def run_calibration(
                 shrinkage_alpha_slm, _cv, covariance_scale_slm = select_shrinkage_alpha_nested_cv(
                     X_train_s,
                     Y_train_s,
-                    fit_model_fn=lambda X_in, Y_in, inner_seed: _fit_slm(
+                    fit_model_fn=lambda X_in, Y_in, inner_seed: fit_ppls_slm(
                         X_in,
                         Y_in,
                         r=r,
@@ -264,7 +214,9 @@ def run_calibration(
                         constraint_slack=slm_constraint_slack,
                         verbose=bool(slm_adaptive_shrinkage_verbose),
                         progress_every=int(slm_progress_every),
+                        data_driven_init_fn=_data_driven_theta0,
                     ),
+
                     alpha_grid=grid,
                     n_folds=n_inner,
                     seed=int(seed + fold_idx),

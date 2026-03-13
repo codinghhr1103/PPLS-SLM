@@ -59,8 +59,9 @@ import pandas as pd
 from scipy import stats
 
 
-from ppls_slm.algorithms import EMAlgorithm, InitialPointGenerator, ScalarLikelihoodMethod
 from ppls_slm.apps.prediction_baselines import compute_regression_metrics, run_plsr_prediction, run_ridge_prediction
+from ppls_slm.apps.prediction_common import build_cv_folds, fit_ppls_em, fit_ppls_slm
+
 from ppls_slm.ppls_model import PPLSModel
 
 
@@ -635,43 +636,29 @@ def _fit_ppls_params_slm(
     slm_data_start: bool,
     slm_verbose: bool,
 ) -> Dict:
-    p, q = X_train_s.shape[1], Y_train_s.shape[1]
-
-    init_gen = InitialPointGenerator(p=p, q=q, r=r, n_starts=n_starts, random_seed=seed)
-    starting_points = init_gen.generate_starting_points()
-
-    if bool(slm_data_start) and starting_points:
-        starting_points[0] = _data_driven_theta0(X_train_s, Y_train_s, r=r)
-
-    slm = ScalarLikelihoodMethod(
-        p=p,
-        q=q,
-        r=r,
-        optimizer=str(slm_optimizer),
+    return fit_ppls_slm(
+        X_train_s,
+        Y_train_s,
+        r=int(r),
+        n_starts=int(n_starts),
+        seed=int(seed),
         max_iter=int(slm_max_iter),
+        optimizer=str(slm_optimizer),
         use_noise_preestimation=True,
         gtol=float(slm_gtol),
         xtol=float(slm_xtol),
         barrier_tol=float(slm_barrier_tol),
+        initial_constr_penalty=1.0,
         constraint_slack=float(slm_constraint_slack),
         verbose=bool(slm_verbose),
         progress_every=int(slm_progress_every),
         early_stop_patience=slm_early_stop_patience,
         early_stop_rel_improvement=slm_early_stop_rel_improvement,
+        use_data_driven_init=bool(slm_data_start),
+        data_driven_init_fn=_data_driven_theta0,
+        include_meta={"n_iterations": "n_iterations", "success": "success"},
     )
 
-    res = slm.fit(X_train_s, Y_train_s, starting_points)
-
-    return {
-        "W": res["W"],
-        "C": res["C"],
-        "B": res["B"],
-        "Sigma_t": res["Sigma_t"],
-        "sigma_e2": res["sigma_e2"],
-        "sigma_f2": res["sigma_f2"],
-        "sigma_h2": res["sigma_h2"],
-        "_meta": {"n_iterations": res.get("n_iterations"), "success": res.get("success")},
-    }
 
 
 
@@ -688,28 +675,19 @@ def _fit_ppls_params_em(
     em_tol: float,
     em_data_start: bool,
 ) -> Dict:
-    p, q = X_train_s.shape[1], Y_train_s.shape[1]
+    return fit_ppls_em(
+        X_train_s,
+        Y_train_s,
+        r=int(r),
+        n_starts=int(n_starts),
+        seed=int(seed),
+        max_iter=int(em_max_iter),
+        tol=float(em_tol),
+        use_data_driven_init=bool(em_data_start),
+        data_driven_init_fn=_data_driven_theta0,
+        include_meta={"n_iterations": "n_iterations", "log_likelihood": "log_likelihood"},
+    )
 
-    init_gen = InitialPointGenerator(p=p, q=q, r=r, n_starts=n_starts, random_seed=seed)
-    starting_points = init_gen.generate_starting_points()
-
-    if bool(em_data_start) and starting_points:
-        starting_points[0] = _data_driven_theta0(X_train_s, Y_train_s, r=r)
-
-    em = EMAlgorithm(p=p, q=q, r=r, max_iter=int(em_max_iter), tolerance=float(em_tol))
-    res = em.fit(X_train_s, Y_train_s, starting_points)
-
-
-    return {
-        "W": res["W"],
-        "C": res["C"],
-        "B": res["B"],
-        "Sigma_t": res["Sigma_t"],
-        "sigma_e2": res["sigma_e2"],
-        "sigma_f2": res["sigma_f2"],
-        "sigma_h2": res["sigma_h2"],
-        "_meta": {"n_iterations": res.get("n_iterations"), "log_likelihood": res.get("log_likelihood")},
-    }
 
 
 def _predict_ppls(
@@ -1012,9 +990,8 @@ def kfold_prediction_benchmark(
         alphas = [0.05, 0.10, 0.15, 0.20, 0.25]
 
     N = X.shape[0]
-    rng = np.random.RandomState(seed)
-    indices = rng.permutation(N)
-    folds = np.array_split(indices, int(n_folds))
+    folds = build_cv_folds(n_samples=N, n_folds=int(n_folds), seed=int(seed))
+
 
     metrics_rows: List[Dict] = []
     calib_rows: List[Dict] = []

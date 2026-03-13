@@ -34,6 +34,8 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 
+
+
 def _get_total_memory_gb() -> Optional[float]:
     """Best-effort total physical memory (GB). Works on Windows without extra deps."""
     try:
@@ -110,20 +112,8 @@ def _thread_limited_env() -> dict:
 
 
 
-def _tune_montecarlo_config(cfg: dict, n_jobs: int) -> dict:
-    tuned = dict(cfg)
-    exp = dict(tuned.get("experiment", {}))
 
-    # Enable trial-level parallelism by default (can be turned off in config).
-    if "parallel_trials" not in exp:
-        exp["parallel_trials"] = True
 
-    # Auto-fill when user uses sentinel values.
-    if exp.get("n_jobs") in (None, -1, 0):
-        exp["n_jobs"] = int(n_jobs)
-
-    tuned["experiment"] = exp
-    return tuned
 
 
 
@@ -201,6 +191,7 @@ def save_json(path: Path, obj: dict) -> None:
 
 
 def set_force_flags(config: dict, value: bool) -> dict:
+
     cfg = dict(config)
     out = dict(cfg.get("output", {}))
     out["force_data_generation"] = bool(value)
@@ -249,17 +240,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    repo_root = Path(__file__).resolve().parents[1]
-    config_path = (repo_root / args.config).resolve()
+    root = Path(__file__).resolve().parents[1]
+    config_path = (root / args.config).resolve()
+
+
 
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    logs_dir = repo_root / "output" / "logs" / "one_click" / ts
+    logs_dir = root / "output" / "logs" / "one_click" / ts
+
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
     print("One-click experiment runner")
-    print(f"Repo root : {repo_root}")
+    print(f"Repo root : {root}")
+
     print(f"Logs dir  : {logs_dir}")
 
     recommended_jobs = _recommend_n_jobs()
@@ -308,7 +303,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
 
         # Prefer CLI override; otherwise use config; otherwise fall back to bundled zip if present.
-        default_brca_zip = repo_root / "application" / "brca_data_w_subtypes.csv.zip"
+        default_brca_zip = root / "application" / "brca_data_w_subtypes.csv.zip"
+
         brca_data = args.brca_data or assoc_cfg.get("brca_data") or (str(default_brca_zip) if default_brca_zip.exists() else None)
 
         def _rm_tree(p: Path) -> None:
@@ -321,7 +317,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if args.clean:
             # Clean common outputs to avoid mixing new results with stale files.
             # NOTE: We deliberately do NOT touch `.codebuddy/`.
-            out_base = Path(original_config.get("output", {}).get("base_dir") or (repo_root / "output")).resolve()
+            out_base = Path(original_config.get("output", {}).get("base_dir") or (root / "output")).resolve()
             _rm_tree(out_base / "data")
             _rm_tree(out_base / "data_high")
             _rm_tree(out_base / "results")
@@ -332,17 +328,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             _rm_tree(out_base / "pcca_simulation")
             _rm_tree(out_base / "ppca_verification")
 
-            _rm_tree((repo_root / str(assoc_out)).resolve())
-            _rm_tree((repo_root / str(pred_out)).resolve())
-            _rm_tree((repo_root / "results_prediction_brca").resolve())
-            _rm_tree((repo_root / "results_citeseq").resolve())
-
-
-
-
+            _rm_tree((root / str(assoc_out)).resolve())
+            _rm_tree((root / str(pred_out)).resolve())
+            _rm_tree((root / "results_prediction_brca").resolve())
+            _rm_tree((root / "results_citeseq").resolve())
 
             if args.clean_artifacts:
-                _rm_tree(repo_root / "paper" / "artifacts")
+                _rm_tree(root / "paper" / "artifacts")
+
 
             print("\n[OK] Cleaned previous outputs.")
 
@@ -356,8 +349,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
         # 1) Monte Carlo pipeline
         if run_montecarlo:
-            code = tee_run([sys.executable, "-m", "ppls_slm.cli.montecarlo"], cwd=repo_root, log_path=logs_dir / "01_main.log", env=run_env)
-
+            code = tee_run([sys.executable, "-m", "ppls_slm.cli.montecarlo"], cwd=root, log_path=logs_dir / "01_main.log", env=run_env)
             if code != 0:
                 return code
 
@@ -365,8 +357,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if run_speed:
             code = tee_run(
                 [sys.executable, "-u", "-m", "ppls_slm.benchmarks.speed_experiment"],
-
-                cwd=repo_root,
+                cwd=root,
                 log_path=logs_dir / "02_speed_experiment.log",
                 env=run_env,
             )
@@ -376,66 +367,48 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         # 3) Association analysis
         if run_association:
             cmd = [sys.executable, "-m", "ppls_slm.apps.association_analysis", "--output_dir", str(assoc_out), "--plot"]
-
             if args.gene_expr and args.protein_expr:
                 cmd += ["--gene_expr", args.gene_expr, "--protein_expr", args.protein_expr]
             elif brca_data:
                 cmd += ["--brca_data", str(brca_data)]
 
-            code = tee_run(cmd, cwd=repo_root, log_path=logs_dir / "03_association.log", env=run_env)
-
+            code = tee_run(cmd, cwd=root, log_path=logs_dir / "03_association.log", env=run_env)
             if code != 0:
                 return code
 
         # 4) Prediction (synthetic)
         if run_prediction:
-            # Prediction app reads *all* hyperparameters from config.
             cmd = [sys.executable, "-u", "-m", "ppls_slm.apps.prediction", "--config", str(config_path)]
-
-            code = tee_run(cmd, cwd=repo_root, log_path=logs_dir / "04_prediction.log", env=run_env)
+            code = tee_run(cmd, cwd=root, log_path=logs_dir / "04_prediction.log", env=run_env)
             if code != 0:
                 return code
-
-
-
-
-
-
 
         # 5) BRCA prediction benchmark (optional)
         if run_brca_prediction:
-            # This module reads all hyperparameters from config.json (single source of truth).
             cmd = [sys.executable, "-u", "-m", "ppls_slm.apps.brca_prediction", "--config", str(config_path)]
-
-            code = tee_run(cmd, cwd=repo_root, log_path=logs_dir / "05_brca_prediction.log", env=run_env)
+            code = tee_run(cmd, cwd=root, log_path=logs_dir / "05_brca_prediction.log", env=run_env)
             if code != 0:
                 return code
-
 
         # 6) BRCA calibration benchmark (optional)
         if run_brca_calibration:
             cmd = [sys.executable, "-u", "-m", "ppls_slm.apps.brca_calibration", "--config", str(config_path)]
-
-            code = tee_run(cmd, cwd=repo_root, log_path=logs_dir / "06_brca_calibration.log", env=run_env)
+            code = tee_run(cmd, cwd=root, log_path=logs_dir / "06_brca_calibration.log", env=run_env)
             if code != 0:
                 return code
-
 
         # 6b) CITE-seq prediction benchmark (optional)
         if run_citeseq_prediction:
             cmd = [sys.executable, "-u", "-m", "ppls_slm.apps.citeseq_prediction", "--config", str(config_path)]
-
-            code = tee_run(cmd, cwd=repo_root, log_path=logs_dir / "06b_citeseq_prediction.log", env=run_env)
+            code = tee_run(cmd, cwd=root, log_path=logs_dir / "06b_citeseq_prediction.log", env=run_env)
             if code != 0:
                 return code
 
-
         # 7) PCCA simulation (Table 1 extension)
-
         if run_pcca_simulation:
             code = tee_run(
-                [sys.executable, "-u", "scripts/run_pcca_experiment.py", "--config", str(config_path)],
-                cwd=repo_root,
+                [sys.executable, "-u", "-m", "ppls_slm.apps.pcca_simulation", "--config", str(config_path)],
+                cwd=root,
                 log_path=logs_dir / "07_pcca_simulation.log",
                 env=run_env,
             )
@@ -445,8 +418,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         # 8) PPCA verification (Appendix)
         if run_ppca_verification:
             code = tee_run(
-                [sys.executable, "-u", "scripts/run_ppca_verification.py", "--config", str(config_path)],
-                cwd=repo_root,
+                [sys.executable, "-u", "-m", "ppls_slm.apps.ppca_verification", "--config", str(config_path)],
+                cwd=root,
                 log_path=logs_dir / "08_ppca_verification.log",
                 env=run_env,
             )
@@ -455,10 +428,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
         # 9) Sync artifacts
         if run_sync:
-            code = tee_run([sys.executable, "-u", "scripts/sync_artifacts.py"], cwd=repo_root, log_path=logs_dir / "09_sync_artifacts.log", env=run_env)
-
+            code = tee_run([sys.executable, "-u", "scripts/sync_artifacts.py"], cwd=root, log_path=logs_dir / "09_sync_artifacts.log", env=run_env)
             if code != 0:
                 return code
+
 
 
 
@@ -467,7 +440,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print("\n" + "=" * 80)
         print(f"ALL DONE in {elapsed/60:.1f} minutes")
         print(f"Logs: {logs_dir}")
-        print(f"Artifacts synced into: {repo_root / 'paper' / 'artifacts'}")
+        print(f"Artifacts synced into: {root / 'paper' / 'artifacts'}")
+
         print("Next: tell me this timestamp folder so I can inspect outputs/logs.")
         print("=" * 80)
 
