@@ -16,8 +16,8 @@
 - CITE-seq 蛋白预测与校准
 - 关联分析
 - PCCA / PPCA 辅助实验
-- 模型选择实验
 - 理论命题数值检查
+
 - 论文产物同步与表格生成
 
 ## 环境准备
@@ -113,14 +113,6 @@ python scripts/run_citeseq.py --config config.json
 python -m ppls_slm.apps.association_analysis --brca_data application/brca_data_w_subtypes.csv.zip --output_dir results_association --plot
 ```
 
-#### Large-scale parameter recovery
-
-```bash
-python -m ppls_slm.apps.parameter_recovery_scale --config config.json
-python -m ppls_slm.apps.parameter_recovery_scale --config config.json --mode smoke
-python -m ppls_slm.apps.parameter_recovery_scale --config config.json --n-jobs 4 --overwrite
-```
-
 #### PCCA / PPCA
 
 ```bash
@@ -135,20 +127,13 @@ python scripts/run_pcca_experiment.py --config config.json
 python scripts/run_ppca_verification.py --config config.json
 ```
 
-#### Model selection
-
-```bash
-python -m ppls_slm.apps.model_selection_synthetic --output_dir results_model_selection/synthetic --parallel_trials --n_jobs 4 --verbose
-python -m ppls_slm.apps.model_selection_brca --brca_data application/brca_data_w_subtypes.csv.zip --output_dir results_model_selection/brca --verbose
-```
-
-#### Smoke / Ablation / Theory checks
+#### Smoke / Theory checks
 
 ```bash
 python -m ppls_slm.cli.smoke
-python -m ppls_slm.cli.noise_preestimation_ablation --output_dir results_noise_ablation
 python theory_checks/run_all_checks.py
 ```
+
 
 ## 论文实验与 README 实验对照
 
@@ -192,17 +177,7 @@ python scripts/run_all_experiments.py --config config.json
 | 第 8 节 Simulation 末段与附录 `PCCA specialization simulation`；表 `tab:pcca_parameter_mse` | PCCA 特化仿真 | `PCCA / PPCA` | `ppls_slm/apps/pcca_simulation.py` | `python -m ppls_slm.apps.pcca_simulation --config config.json` | 也可用便捷脚本 `python scripts/run_pcca_experiment.py --config config.json`。 |
 | 第 8 节 Simulation 末段与附录 `PPCA noise variance estimation verification`；表 `tab:ppca_noise_verification` | PPCA 噪声方差验证 | `PCCA / PPCA` | `ppls_slm/apps/ppca_verification.py` | `python -m ppls_slm.apps.ppca_verification --config config.json` | 也可用便捷脚本 `python scripts/run_ppca_verification.py --config config.json`。 |
 
-### 当前 README 中有、但当前论文 `main.tex` 未直接引用的实验
 
-以下实验入口目前保留在 README 中，但没有被当前 `paper/main.tex` 直接纳入正文或附录主实验链路：
-
-- `ppls_slm/apps/model_selection_synthetic.py`
-- `ppls_slm/apps/model_selection_brca.py`
-- `ppls_slm/apps/parameter_recovery_scale.py`
-- `ppls_slm/cli/noise_preestimation_ablation.py`
-- `theory_checks/*.py`
-
-这些脚本仍然有研究用途，但不属于当前论文主复现清单。
 
 ## 目录说明
 
@@ -215,13 +190,13 @@ python scripts/run_all_experiments.py --config config.json
 - `ppls_slm/bcd_slm.py`：`BCD-SLM`。
 - `ppls_slm/data_generator.py`：模拟数据生成。
 - `ppls_slm/experiment.py`：Monte Carlo 实验编排、并行与汇总。
-- `ppls_slm/model_selection.py`：BIC / CV 模型选择工具。
 - `ppls_slm/visualization.py`：结果绘图与导出。
 
 ### 应用与实验入口
 
-- `ppls_slm/apps/`：预测、校准、关联分析、PCCA / PPCA、模型选择等应用实验。
-- `ppls_slm/cli/`：Monte Carlo、smoke test、噪声预估消融等命令行入口。
+- `ppls_slm/apps/`：预测、校准、关联分析、PCCA / PPCA 等应用实验。
+- `ppls_slm/cli/`：Monte Carlo、smoke test 等命令行入口。
+
 - `ppls_slm/benchmarks/`：速度基准实验。
 - `scripts/`：一键运行、CITE-seq 数据准备、论文产物同步、表格生成、论文编译。
 - `theory_checks/`：理论命题数值校验脚本。
@@ -280,7 +255,7 @@ python scripts/prepare_citeseq.py --input data/pbmc_seurat_v4.h5ad
 - BRCA 预测 / 校准：`results_prediction_brca/`
 - Association：`results_association/`
 - CITE-seq：`results_citeseq/`
-- Parameter recovery scale：`output/parameter_recovery_scale/`
+
 - PCCA：`output/pcca_simulation/`
 - PPCA：`output/ppca_verification/`
 - 一键运行日志：`output/logs/one_click/`

@@ -89,13 +89,7 @@ def main() -> int:
     copied += int(copy_file(ppca_out / "summary.csv", ppca_dir / "summary.csv"))
     copied += int(copy_file(ppca_out / "per_trial.csv", ppca_dir / "per_trial.csv"))
 
-    # --- Large-scale parameter recovery ---
-    scale_out = out / "parameter_recovery_scale" / "full"
-    scale_dir = artifacts / "simulation_scale"
 
-    copied += int(copy_file(scale_out / "parameter_recovery_scale_summary.csv", scale_dir / "parameter_recovery_scale_summary.csv"))
-    copied += int(copy_file(scale_out / "parameter_recovery_scale_runtime.csv", scale_dir / "parameter_recovery_scale_runtime.csv"))
-    copied += int(copy_file(scale_out / "run_manifest.json", scale_dir / "run_manifest.json"))
 
     # --- Speed experiment ---
     # Some workflows keep the figure under paper/ for LaTeX compilation.
@@ -170,22 +164,7 @@ def main() -> int:
 
 
 
-    # --- Model selection (latent dimension r) ---
 
-    ms_root = repo_root / "results_model_selection"
-    ms_dir = artifacts / "model_selection"
-
-    ms_syn = ms_root / "synthetic"
-    ms_syn_dst = ms_dir / "synthetic"
-    copied += int(copy_file(ms_syn / "selection_accuracy_table.csv", ms_syn_dst / "selection_accuracy_table.csv"))
-    copied += int(copy_file(ms_syn / "bic_per_trial.csv", ms_syn_dst / "bic_per_trial.csv"))
-    copied += int(copy_file(ms_syn / "cv_mse_per_trial.csv", ms_syn_dst / "cv_mse_per_trial.csv"))
-    copied += copy_glob(ms_syn / "figures", "*.png", ms_syn_dst / "figures")
-
-    ms_brca = ms_root / "brca"
-    ms_brca_dst = ms_dir / "brca"
-    copied += int(copy_file(ms_brca / "brca_r_selection.csv", ms_brca_dst / "brca_r_selection.csv"))
-    copied += copy_glob(ms_brca / "figures", "*.png", ms_brca_dst / "figures")
 
     # Also generate LaTeX tables from the synced artifacts so the paper stays consistent.
 
